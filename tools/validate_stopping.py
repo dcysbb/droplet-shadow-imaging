@@ -1,4 +1,9 @@
-"""NIST ESTAR 3 MeV liquid-water stopping-power cross-check."""
+"""用 NIST ESTAR 液态水数据核对 Geant4 的 3 MeV 能损量级。
+
+这里使用沿球直径穿过 100 μm 水的铅笔束；统计初级电子在
+**离开水滴时**的能量，不按探测器是否接收筛选。ESTAR 的
+18.89 keV 是连续减速近似参考值，不能要求逐粒子完全相同。
+"""
 
 from __future__ import annotations
 
@@ -18,6 +23,7 @@ from droplet_shadow.native import run_geant4
 
 
 def main() -> None:
+    """运行中性水滴铅笔束，保存 NIST/Geant4 对照与出口散射指标。"""
     parser = argparse.ArgumentParser()
     parser.add_argument("--n", type=int, default=5000)
     parser.add_argument("--output", type=Path, default=ROOT / "results" / "stopping_validation")
@@ -27,10 +33,12 @@ def main() -> None:
         run={"engine": "geant4", "n_simulated": args.n,
              "exposure_electrons": args.n})
     kinetic = 3e6 * E_CHARGE
+    # 相对论动量由动能得到；所有电子从束轴中心直射，消除源展宽。
     momentum = np.sqrt(kinetic * (kinetic + 2 * M_E * C**2)) / C
     beam = np.tile([0.0, 0.0, momentum], (args.n, 1))
     hits = run_geant4(config, np.zeros((args.n, 4)), beam, args.output / "native")
     exiting_primary = hits["exit_energy_mev"][hits["exit_parent_id"] == 0]
+    # 只比较初级电子；次级粒子有自己的初始能量与路径长度。
     primary_mask = hits["exit_parent_id"] == 0
     angles = np.arccos(np.clip(hits["exit_uz"][primary_mask], -1, 1))
     mean_loss_kev = float(np.mean(3.0 - exiting_primary) * 1000)

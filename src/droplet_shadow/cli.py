@@ -1,4 +1,10 @@
-"""Command line interface for reproducible simulations and scans."""
+"""面向实验使用者的命令行入口。
+
+``simulate`` 运行单点，``scan`` 运行可缓存的参数扫描，
+``analyze`` 比较同条件图像，``fit-charge`` 做离散电荷模板拟合，
+``estimate-limit`` 用独立曝光校准检出限。核心算法均在同名 Python
+模块中，CLI 只负责解析参数、调用与打印，不应另写一套物理公式。
+"""
 
 from __future__ import annotations
 
@@ -18,6 +24,7 @@ from .sensitivity import detection_calibration
 
 
 SCAN_VALUES = {
+    # 首轮预设网格；完整五维笛卡尔积可用 --full，但计算量很大。
     "energy_mev": [1, 2, 3, 5, 10],
     "q_e": [-1e7, -1e6, -1e5, -1e4, 0, 1e4, 1e5, 1e6, 1e7],
     "l1_mm": [5, 10, 20, 30],
@@ -31,6 +38,11 @@ SECTION_FOR = {"energy_mev": "source", "q_e": "charge", "l1_mm": "geometry",
 def scan(config_path: str | Path, output_dir: str | Path,
          n_simulated: int | None = None, full: bool = False,
          q_values: list[float] | None = None) -> list[dict[str, object]]:
+    """按阶段执行能量–电荷网格及单因素扫描，保存逐点指标 CSV。
+
+若结果文件存在、配置完全相同且源代码/Geant4 哈希未变，复用缓存；
+否则重新计算。缓存只保证计算版本一致，不代替 Monte Carlo 误差估计。
+"""
     config = load_config(config_path)
     if n_simulated is not None:
         config = config.with_updates(run={"n_simulated": n_simulated})
@@ -46,6 +58,7 @@ def scan(config_path: str | Path, output_dir: str | Path,
         raise ValueError("PB charge scans require new ion counts at each Q; use separate configs")
     cases = []
     if full:
+        # 最昂贵模式：5 个参数所有组合；默认只做二维主扫描和单因素。
         cases = [("full", settings) for settings in product(
             values["energy_mev"], values["q_e"], values["l1_mm"],
             values["l2_mm"], values["crossover_fwhm_um"])]
@@ -97,6 +110,7 @@ def scan(config_path: str | Path, output_dir: str | Path,
 
 
 def main() -> None:
+    """定义子命令并把参数映射到 Python API。"""
     parser = argparse.ArgumentParser(prog="droplet-shadow")
     sub = parser.add_subparsers(dest="command", required=True)
     sim = sub.add_parser("simulate", help="Run one exposure")
@@ -141,6 +155,7 @@ def main() -> None:
         ref = load_images(args.reference)
         config = load_config(args.result + "/config.yaml") if (Path(args.result) / "config.yaml").exists() else None
         if config is None:
+            # 旧结果目录可能没有独立 config.yaml；以 result.json 为准重建。
             from .config import SimulationConfig, Geometry, Charge, Source, Detector, Run
             info = json.loads((Path(args.result) / "result.json").read_text(encoding="utf-8"))
             sections = info["config"]

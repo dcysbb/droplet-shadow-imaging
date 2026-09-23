@@ -1,4 +1,9 @@
-"""Independent synthetic-exposure calibration of charge detection."""
+"""通过独立合成曝光校准“可检测净电荷”的统计判据。
+
+输入是同条件但更高输运统计量的期望图模板。每个候选 Q 重新抽样
+电子源、完整输运和探测器，前半组估计阈值，后半组只做验证，
+避免在同一批随机数据上既定阈值又报告检出率。
+"""
 
 from __future__ import annotations
 
@@ -16,6 +21,8 @@ from .simulation import load_images, simulate
 
 @dataclass(frozen=True)
 class DetectionCalibration:
+    """一个固定仪器情景和离散 Q 网格下的校准与留出验证摘要。"""
+
     threshold: float
     false_positive_rate: float
     power_by_charge: dict[float, float]
@@ -31,12 +38,13 @@ def detection_calibration(config: SimulationConfig,
                           template_directories: dict[float, str | Path],
                           output_dir: str | Path, repetitions: int = 100,
                           fit_nuisance: bool = True) -> DetectionCalibration:
-    """Generate independent source+transport+detector exposures for every Q.
+    """为每个 Q 生成独立的源+输运+探测器曝光，评估 5%/95% 判据。
 
-    Templates must be produced separately at higher transport statistics. A
-    returned threshold is conditional on the template grid and instrument
-    scenario, not an instrument-independent charge limit.
-    """
+模板必须单独以更高输运统计量制作。所得阈值依赖模板 Q 网格、
+光源、探测器、曝光、静态液滴假设，不是仪器无关的普适检出限。
+``repetitions`` 对每个 Q 分配相同次数，至少 4 次仅够测试流程；
+估计 5% 尾概率实际应使用远多于 4 次的独立曝光。
+"""
     if repetitions < 4:
         raise ValueError("At least four repetitions are required for calibration/validation splitting")
     if 0.0 not in template_directories or len(template_directories) < 2:
@@ -47,6 +55,7 @@ def detection_calibration(config: SimulationConfig,
     output.mkdir(parents=True, exist_ok=True)
     templates: dict[float, np.ndarray] = {}
     for q, directory in template_directories.items():
+        # 模板的所有干扰条件必须匹配；否则图像差异可能不是 Q 引起的。
         metadata = json.loads((Path(directory) / "result.json").read_text(encoding="utf-8"))
         source = metadata["config"]
         for section in ("geometry", "source", "detector"):
@@ -76,6 +85,7 @@ def detection_calibration(config: SimulationConfig,
     records = []
     for q in sorted(templates):
         for repeat in range(repetitions):
+            # 不同 Q 和不同重复编号都使用独立种子，避免重复同一电子束。
             case = config.with_updates(charge={"q_e": q},
                                        run={"seed": config.run.seed + repeat +
                                             100003 * (1 + list(sorted(templates)).index(q))})
@@ -86,6 +96,7 @@ def detection_calibration(config: SimulationConfig,
                              fit_nuisance=fit_nuisance)
             statistic = fit.scores[0.0] - min(value for charge, value in fit.scores.items()
                                               if charge != 0.0)
+            # 统计量越大表示非零 Q 模板比零 Q 模板改进越明显。
             scores[q].append(statistic)
             all_fit_scores[q].append(fit.scores)
             fitted_charges[q].append(fit.q_e)
@@ -96,6 +107,8 @@ def detection_calibration(config: SimulationConfig,
                             "best_nonzero_score": fit.scores[0.0] - statistic,
                             "all_scores_json": json.dumps(fit.scores)})
     null_calibration = np.asarray(scores[0.0][:calibration_count])
+    # 先在零电荷校准半样本上选第 95 百分位阈值；再用留出半样本
+    # 分别估计假阳性率和各备择的检出概率。
     threshold = float(np.quantile(null_calibration, 0.95, method="higher"))
     false_positive = float(np.mean(np.asarray(scores[0.0][calibration_count:]) > threshold))
     power = {q: float(np.mean(np.asarray(values[calibration_count:]) > threshold))
@@ -106,6 +119,7 @@ def detection_calibration(config: SimulationConfig,
         false_positive=0.05, power=0.95)
         if false_positive <= 0.05 else None)
     ci_thresholds = {}
+    # 对每个真实 Q 分别校准“该 Q 分数距最佳分数”阈值，构成网格区间。
     for q in templates:
         differences = [item[q] - min(item.values())
                        for item in all_fit_scores[q][:calibration_count]]
@@ -119,6 +133,7 @@ def detection_calibration(config: SimulationConfig,
             minimum_score = min(item.values())
             accepted = [charge for charge in templates
                         if item[charge] - minimum_score <= ci_thresholds[charge]]
+            # 离散网格可能不连续；此处报告被接受 Q 的凸包覆盖情况。
             covered.append(bool(accepted) and min(accepted) <= q <= max(accepted))
         coverage[q] = float(np.mean(covered))
         bias[q] = float(np.mean(np.asarray(fitted_charges[q][calibration_count:]) - q))

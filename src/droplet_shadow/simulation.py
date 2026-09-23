@@ -1,4 +1,10 @@
-"""Simulation orchestration, provenance and inspectable result files."""
+"""一次模拟从配置到可检查文件的总调度。
+
+主流程是 ``simulate``：抽样源 → 选择 ray/Geant4 输运 →
+探测器响应 → 物理/图像指标 → 保存 NPZ、JSON、PNG/SVG。
+``simulate_controls`` 用同一个源随机种子分别生成带电水滴、
+中性水滴和无滴参照，目的是把电场效应与水材料效应拆开看。
+"""
 
 from __future__ import annotations
 
@@ -30,6 +36,8 @@ from .source import geometric_emittance, sample_source
 
 @dataclass
 class SimulationResult:
+    """一次运行的内存结果；保存目录可为空，此时不写文件。"""
+
     config: SimulationConfig
     hits: dict[str, np.ndarray]
     images: dict[str, np.ndarray]
@@ -40,12 +48,18 @@ class SimulationResult:
 def _base_metrics(config: SimulationConfig, hits: dict[str, np.ndarray],
                   images: dict[str, np.ndarray], phase: np.ndarray,
                   momentum: np.ndarray) -> dict[str, float | None]:
+    """整理与模拟条件直接相关的物理量和逐粒子统计。
+
+返回字典中的长度指标明确标注 ``_um``，能量为 ``_mev/_kev``。
+``None`` 表示当前图像/事件没有足够信息定义此量，不应当作零。
+"""
     qray = rayleigh_charge_e(config.geometry.radius_m, config.geometry.surface_tension_n_m)
     radius = config.geometry.radius_m
     qe = config.charge.q_e
     primary_hits = hits["primary"]
     entered_hits = hits["entered"]
     data: dict[str, float | None] = {
+        # 前四项只由给定净 Q 的球外解析式推得，不含界面局域场。
         "rayleigh_charge_e": qray,
         "rayleigh_fraction": abs(qe) / qray,
         "surface_potential_from_net_charge_v": COULOMB_K * qe * E_CHARGE / radius,
@@ -65,6 +79,7 @@ def _base_metrics(config: SimulationConfig, hits: dict[str, np.ndarray],
             config.charge.patch_fraction):
         data["multipole_truncation_relative_rms"] = multipole_convergence_error(config)
     if "deposited_e_by_event" in hits:
+        # 这里只评估一次曝光可能改变多少净电荷；首版不随时间更新场。
         total_deposition = float(np.sum(hits["deposited_e_by_event"]))
         data["mean_deposited_charge_e_per_primary"] = total_deposition / config.run.n_simulated
         data["projected_exposure_charge_change_e"] = (total_deposition / config.run.n_simulated *
@@ -73,6 +88,7 @@ def _base_metrics(config: SimulationConfig, hits: dict[str, np.ndarray],
             abs(data["projected_exposure_charge_change_e"] / config.charge.q_e)
             if config.charge.q_e else None)
     if "exit_energy_mev" in hits:
+        # 水滴出口数据用于能损/散射验证，避免只统计打中屏幕的幸存者。
         primary_exit = hits["exit_parent_id"] == 0
         exit_events = hits["exit_event_id"][primary_exit]
         initial_p = np.linalg.norm(momentum[exit_events], axis=1)
@@ -92,6 +108,7 @@ def _base_metrics(config: SimulationConfig, hits: dict[str, np.ndarray],
             data["primary_exit_scattering_rms_mrad"] = float(np.sqrt(np.mean(angles**2)) * 1e3)
             data["primary_exit_scattering_median_mrad"] = float(np.median(angles) * 1e3)
     if len(hits["x_m"]):
+        # 相同源粒子若没有场，按初始方向直线外推的屏幕坐标。
         selected = primary_hits & (hits["event_id"] >= 0) & (hits["event_id"] < len(phase))
         ids = hits["event_id"][selected]
         if ids.size:
@@ -109,10 +126,12 @@ def _base_metrics(config: SimulationConfig, hits: dict[str, np.ndarray],
 
 
 def simulate(config: SimulationConfig, output_dir: str | Path | None = None) -> SimulationResult:
+    """运行一次固定参数、固定随机种子的完整合成曝光。"""
     output = Path(output_dir) if output_dir is not None else None
     if output:
         output.mkdir(parents=True, exist_ok=True)
     source_rng = np.random.default_rng(config.run.seed)
+    # 探测器使用 seed+1，避免源抽样与 shot noise 意外共享同一随机流。
     phase, momentum = sample_source(config.source, config.run.n_simulated, source_rng)
     if config.run.engine == "geant4":
         if output is None:
@@ -129,6 +148,7 @@ def simulate(config: SimulationConfig, output_dir: str | Path | None = None) -> 
 
 
 def _plot_image(result: SimulationResult, path: Path) -> None:
+    """保存单次观测图；青色圆只表示几何投影半径，不是拟合边界。"""
     image = result.images["observed"]
     edges = result.images["x_edges_m"] * 1e3
     fig, ax = plt.subplots(figsize=(7, 6))
@@ -149,6 +169,7 @@ def _plot_image(result: SimulationResult, path: Path) -> None:
 
 
 def version_fingerprint(config: SimulationConfig) -> dict[str, str]:
+    """用源文件和原生可执行文件哈希标识运行版本，供扫描缓存失效判断。"""
     root = Path(__file__).resolve().parents[2]
     digest = hashlib.sha256()
     for path in sorted([*root.glob("src/droplet_shadow/*.py"), *root.glob("cpp/*.cpp"),
@@ -163,6 +184,7 @@ def version_fingerprint(config: SimulationConfig) -> dict[str, str]:
 
 
 def save_result(result: SimulationResult) -> None:
+    """写原始粒子/图像数组、配置与版本记录，以及可直接查看的图。"""
     output = result.output_dir
     if output is None:
         raise ValueError("SimulationResult has no output directory")
@@ -183,6 +205,7 @@ def save_result(result: SimulationResult) -> None:
                "metrics": result.metrics,
                "model_caveat": "Local spectroscopic fields are not equated to external Coulomb fields.",
                "mc_sampling_caveat": (
+                   # 输运样本少于曝光数时，图像可能包含数值 MC 纹理。
                    "n_simulated < exposure_electrons: the expected intensity may retain transport-MC texture; "
                    "increase n_simulated for quantitative images."
                    if result.config.run.n_simulated < result.config.run.exposure_electrons else None)}
@@ -191,6 +214,7 @@ def save_result(result: SimulationResult) -> None:
 
 
 def load_images(path: str | Path) -> dict[str, np.ndarray]:
+    """从运行目录或具体 ``images.npz`` 文件恢复全部图像层。"""
     path = Path(path)
     if path.is_dir():
         path = path / "images.npz"
@@ -199,6 +223,7 @@ def load_images(path: str | Path) -> dict[str, np.ndarray]:
 
 
 def compare_result(result: SimulationResult, reference: SimulationResult) -> dict[str, float | None]:
+    """仅在两图像像素网格完全相同的条件下比较期望强度。"""
     if not np.array_equal(result.images["x_edges_m"], reference.images["x_edges_m"]):
         raise ValueError("Result and reference pixel grids differ")
     return image_metrics(result.config, result.images["expected"],
@@ -207,11 +232,13 @@ def compare_result(result: SimulationResult, reference: SimulationResult) -> dic
 
 def _plot_controls(charged: SimulationResult, neutral: SimulationResult,
                    absent: SimulationResult, path: Path) -> None:
+    """画共同色标的三组绝对强度和带电减中性的可视化差分。"""
     images = [item.images["expected"] for item in (charged, neutral, absent)]
     edges = charged.images["x_edges_m"]
     extent = np.array([edges[0], edges[-1], edges[0], edges[-1]]) * 1e3
     vmax = np.quantile(np.concatenate([array.ravel() for array in images]), 0.995)
     difference = images[0] - images[1]
+    # 模糊只用于显示稀疏 MC 差分；定量指标仍使用未模糊的期望图。
     display_difference = gaussian_filter(difference, 3.0)
     vmax_difference = max(float(np.quantile(abs(display_difference), 0.995)), 1e-12)
     fig, axes = plt.subplots(2, 2, figsize=(10, 9))
@@ -244,7 +271,11 @@ def _plot_controls(charged: SimulationResult, neutral: SimulationResult,
 
 
 def simulate_controls(config: SimulationConfig, output_dir: str | Path) -> dict[str, SimulationResult]:
-    """Save charged, neutral-material and no-material runs with common source seed."""
+    """同源种子生成三组对照：带电水滴、中性水滴、无材料液滴。
+
+带电−中性主要检验电场，中性−无滴主要检验水材料输运；
+三个运行保留绝对通量，不能各自归一化后再比较耗尽量。
+"""
     root = Path(output_dir)
     charged = simulate(config, root / "charged")
     neutral_config = config.with_updates(charge={"q_e": 0, "model": "surface",

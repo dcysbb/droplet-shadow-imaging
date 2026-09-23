@@ -1,3 +1,5 @@
+"""用极小样本验证检出限校准流程的数据隔离，而非宣称物理检出限。"""
+
 import csv
 
 from droplet_shadow.config import SimulationConfig
@@ -6,6 +8,7 @@ from droplet_shadow.simulation import simulate
 
 
 def test_detection_calibration_uses_independent_held_out_exposures(tmp_path):
+    """校准/留出各占一半，且每个 Q 的重复运行有单独记录。"""
     config = SimulationConfig().with_updates(
         run={"engine": "ray", "n_simulated": 12, "exposure_electrons": 12})
     templates = {}

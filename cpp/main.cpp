@@ -1,3 +1,8 @@
+// Geant4 单滴输运核心。阅读顺序建议：main → DetectorConstruction →
+// Generator → DropletField → EventAction/SteppingAction。
+// 坐标原点在液滴中心；电子从 z=-L1 出发，屏幕在 z=+L2。
+// Python native.py 负责把 SI 数据导出为 CSV；此处读入后立即转成
+// Geant4/CLHEP 内部单位，写回 CSV 时再显式除以 mm、MeV 等单位。
 #include "G4Box.hh"
 #include "G4DormandPrince745.hh"
 #include "G4ElectroMagneticField.hh"
@@ -44,17 +49,24 @@
 #include <vector>
 
 namespace {
+// source.csv 每行一个初级电子；x/y 是束腰位置(mm)，xp/yp 是 dx/dz、dy/dz，
+// energy 是动能(MeV)。这些字段仍是 CSV 原始数字，Generator 才乘单位。
 struct Beam { double x, y, xp, yp, energy; };
+// 读入后已转换成 Geant4 内部单位：r、φ、E_r。
 struct Radial { double r, potential, field; };
+// Python 已把球谐系数缩放为电势量纲；只保存 m>=0 的独立项。
 struct Multipole { int ell, m; std::complex<double> coefficient; };
 
 bool IsWaterVolume(const G4VPhysicalVolume* volume) {
+  // 薄层保护几何把一滴水分成多个同材质体积；这些名字都应计作水。
+  // field-* 体积在“无材料”对照中是几何标记，不产生水散射/能损。
   if (!volume) return false;
   const auto& name = volume->GetName();
   return name == "droplet" || name == "core" || name == "core-guard";
 }
 
 std::vector<Beam> ReadBeam(const std::string& path) {
+  // 第一行是列名。只接受完整的 5 列，防止半截事件进入输运。
   std::ifstream file(path);
   if (!file) throw std::runtime_error("Cannot open source: " + path);
   std::string line;
@@ -71,6 +83,7 @@ std::vector<Beam> ReadBeam(const std::string& path) {
 }
 
 std::vector<Radial> ReadRadial(const std::string& path) {
+  // CSV 是 mm、V、V/mm；乘单位后 Geant4 才能正确积分 Lorentz 方程。
   std::ifstream file(path);
   if (!file) throw std::runtime_error("Cannot open field: " + path);
   std::string line;
@@ -88,6 +101,7 @@ std::vector<Radial> ReadRadial(const std::string& path) {
 }
 
 std::vector<Multipole> ReadMultipoles(const std::string& path) {
+  // 系数只需乘 volt，不再乘长度：Python 导出时已按 R^(l+1) 缩放。
   std::ifstream file(path);
   if (!file) throw std::runtime_error("Cannot open multipoles: " + path);
   std::string line;
@@ -104,7 +118,8 @@ std::vector<Multipole> ReadMultipoles(const std::string& path) {
 }
 
 double AssociatedLegendre(int l, int m, double x) {
-  // Condon--Shortley convention, matching scipy.special.sph_harm.
+  // 递推求连带 Legendre 多项式，使用 Condon–Shortley 相位，
+  // 与 Python/SciPy 的球谐函数约定一致，否则非对称场会翻转符号。
   double pmm = 1.0;
   const double root = std::sqrt(std::max(0.0, 1.0 - x * x));
   for (int i = 1; i <= m; ++i) pmm *= -(2 * i - 1) * root;
@@ -120,10 +135,14 @@ double AssociatedLegendre(int l, int m, double x) {
 }
 
 class DropletField final : public G4ElectroMagneticField {
+  // Geant4 在每个积分子步调用 GetFieldValue；磁场分量始终为零。
+  // 球内从径向表插值，球外用总净电荷的 1/r² 解析尾场，
+  // 再加球谐非对称项，覆盖从束腰到探测器的整个传播路径。
  public:
   DropletField(std::vector<Radial> radial, std::vector<Multipole> multipoles)
       : radial_(std::move(radial)), multipoles_(std::move(multipoles)) {}
 
+  // 静电场可交换电子动能与势能，不能让输运器按纯磁场处理。
   G4bool DoesFieldChangeEnergy() const override { return true; }
 
   void GetFieldValue(const G4double point[4], G4double value[6]) const override {
@@ -131,8 +150,10 @@ class DropletField final : public G4ElectroMagneticField {
     const double r = x.mag();
     double er = 0.0;
     if (r >= radial_.back().r) {
+      // 最后一个表点在液滴外半径 R；φ(R)·R/r² 就是外部 Coulomb 场。
       er = radial_.back().potential * radial_.back().r / (r * r);
     } else if (r > 0) {
+      // 球内的 PB/薄壳场已由 Python 采样；只在相邻表点间线性插值。
       auto it = std::lower_bound(radial_.begin(), radial_.end(), r,
                                  [](const Radial& p, double q) { return p.r < q; });
       if (it == radial_.begin()) er = it->field;
@@ -144,6 +165,8 @@ class DropletField final : public G4ElectroMagneticField {
     }
     G4ThreeVector electric = r > 0 ? x * (er / r) : G4ThreeVector();
     if (!multipoles_.empty()) {
+      // 球谐势的笛卡尔梯度用小距离差分。贴近介电边界时，
+      // 跨界面的中心差分会混合内外两套解，因此改用同侧单边差分。
       const double h = std::min(0.1 * um, std::max(0.02 * nm, r * 1e-5));
       const double radius = radial_.back().r;
       const double phi0 = MultipolePotential(x);
@@ -161,6 +184,7 @@ class DropletField final : public G4ElectroMagneticField {
         electric[axis] -= gradient;
       }
     }
+    // Geant4 数组约定是 (Bx,By,Bz,Ex,Ey,Ez)。
     value[0] = value[1] = value[2] = 0.0;
     value[3] = electric.x();
     value[4] = electric.y();
@@ -169,6 +193,8 @@ class DropletField final : public G4ElectroMagneticField {
 
  private:
   double MultipolePotential(const G4ThreeVector& x) const {
+    // 实电势：m=0 项取实部，m>0 要把省略的 -m 共轭项乘 2。
+    // 球内基函数 r^l，球外基函数 r^(-l-1)，在 r=R 接续。
     const double r = x.mag();
     if (r == 0) return 0.0;
     const double radius = radial_.back().r;
@@ -192,6 +218,9 @@ class DropletField final : public G4ElectroMagneticField {
 };
 
 class DetectorConstruction final : public G4VUserDetectorConstruction {
+  // 这里的“Detector”是整个几何：大真空 world、多级近滴加密区、
+  // 可选水材料球体和薄屏幕，不是 Python 的 MCP/荧光屏响应模型。
+  // MCP 增益、PSF、像素与噪声都在 detector.py 后处理。
  public:
   DetectorConstruction(double radius_mm, double l1_mm, double l2_mm,
                        std::string material, double layer_nm, double layer_step_nm,
@@ -209,6 +238,8 @@ class DetectorConstruction final : public G4VUserDetectorConstruction {
     auto* world_solid = new G4Box("world", 100 * mm, 100 * mm,
                                    std::max(l1_, l2_) + 10 * mm);
     auto* world = new G4LogicalVolume(world_solid, vacuum, "world");
+    // 远处 Coulomb 尾场虽弱，但若一步跨越几毫米，能量守恒会变差。
+    // 因此用 20 mm、2 mm 同心分区逐级收紧最大步长。
     world->SetUserLimits(new G4UserLimits(world_step_));
     auto* physical = new G4PVPlacement(nullptr, G4ThreeVector(),
                                        world, "world", nullptr, false, 0);
@@ -229,6 +260,8 @@ class DetectorConstruction final : public G4VUserDetectorConstruction {
                                      droplet_material, droplet_name);
     new G4PVPlacement(nullptr, {}, drop, droplet_name, zone, false, 0);
     if (layer_ > 0 && layer_ < radius_) {
+      // 纳米界面层不能靠毫米级全空间网格来解析。薄壳本身限步，
+      // 边界内外另放 2 nm 保护区，防止刚出壳的一大步跨过场尖峰。
       auto* outer_guard = new G4LogicalVolume(
           new G4Sphere("field-outer-guard", radius_, radius_ + 2 * nm,
                        0, CLHEP::twopi, 0, CLHEP::pi),
@@ -241,6 +274,7 @@ class DetectorConstruction final : public G4VUserDetectorConstruction {
       new G4PVPlacement(nullptr, {}, core, core_name, drop, false, 0);
       const double inner_boundary = radius_ - layer_;
       if (inner_boundary > 2 * nm) {
+        // 核心与薄层交界的内侧也需要保护；水与真空对照都保留几何。
         const std::string guard_name = material_ == "water" ? "core-guard" : "field-core-guard";
         auto* inner_guard = new G4LogicalVolume(
             new G4Sphere(guard_name, inner_boundary - 2 * nm, inner_boundary,
@@ -256,6 +290,7 @@ class DetectorConstruction final : public G4VUserDetectorConstruction {
     }
     auto* screen = new G4LogicalVolume(new G4Box("screen", 40 * mm, 40 * mm, 0.5 * um),
                                        vacuum, "screen");
+    // 薄屏幕只是记录穿过 z=L2 的粒子，不在 Geant4 内模拟 MCP。
     new G4PVPlacement(nullptr, G4ThreeVector(0, 0, l2_), screen, "screen", world, false, 0);
     return physical;
   }
@@ -267,6 +302,8 @@ class DetectorConstruction final : public G4VUserDetectorConstruction {
 };
 
 class Generator final : public G4VUserPrimaryGeneratorAction {
+  // 第 i 个 Geant4 event 读取 source.csv 第 i 行；保证单粒子记录
+  // 可以靠 event_id 与原始相空间点一一对应。
  public:
   Generator(const std::vector<Beam>& beam, double l1) : beam_(beam), l1_(l1 * mm) {
     gun_ = std::make_unique<G4ParticleGun>(1);
@@ -286,6 +323,8 @@ class Generator final : public G4VUserPrimaryGeneratorAction {
 };
 
 class EventAction final : public G4UserEventAction {
+  // 每个初级事件维护两个量：是否有初级电子触及水，以及事件对水滴
+  // 的净电荷交换。后者仅用于评估静态电场假设是否会被曝光破坏。
  public:
   explicit EventAction(std::ofstream& deposition) : deposition_(deposition) {}
   void BeginOfEventAction(const G4Event*) override { entered_ = false; deposited_e_ = 0; }
@@ -302,6 +341,10 @@ class EventAction final : public G4UserEventAction {
 };
 
 class SteppingAction final : public G4UserSteppingAction {
+  // 在每个 Geant4 步末观察材料边界和屏幕：
+  // 1) 带电轨迹跨入/跨出水，更新沉积电荷；
+  // 2) 出水粒子记入 exits.csv，避免屏幕孔径造成能损统计偏差；
+  // 3) 电子到屏幕记入 hits.csv，然后停止追踪该粒子。
  public:
   SteppingAction(EventAction* event, std::ofstream& output, std::ofstream& exits)
       : event_(event), output_(output), exits_(exits) {}
@@ -326,9 +369,12 @@ class SteppingAction final : public G4UserSteppingAction {
     const bool water_before = IsWaterVolume(pre_volume);
     const bool water_after = IsWaterVolume(post_volume);
     if (water_before != water_after) {
+      // 进入水体加上粒子自身电荷，离开时减去；单位为 e。
+      // 次级电子也会贡献，因此正值不简单等于初级束流数。
       event_->add_deposited(track->GetDefinition()->GetPDGCharge() * (water_after ? 1 : -1));
     }
     if (water_before && !water_after) {
+      // 记录水滴出口的能量与方向；初级/次级由 parent_id 区分。
       const auto& position = post->GetPosition();
       exits_ << G4RunManager::GetRunManager()->GetCurrentEvent()->GetEventID() << ','
              << track->GetTrackID() << ',' << track->GetParentID() << ','
@@ -340,6 +386,8 @@ class SteppingAction final : public G4UserSteppingAction {
     }
     if (track->GetParentID() == 0 && (water_before || water_after)) event_->mark_entered();
     if (name == "screen" && track->GetDefinition()->GetPDGEncoding() == 11) {
+      // 只把电子（PDG 11）作为成像 hits；event_->entered() 标记
+      // 该初级事件是否曾入水，不等同于屏幕上的这个次级自身穿滴。
       const auto& pos = pre->GetPosition();
       output_ << G4RunManager::GetRunManager()->GetCurrentEvent()->GetEventID() << ','
               << track->GetTrackID() << ',' << track->GetParentID() << ','
@@ -356,6 +404,7 @@ class SteppingAction final : public G4UserSteppingAction {
 };
 
 class Actions final : public G4VUserActionInitialization {
+  // 把事件源、事件累计器和逐步观察器注册给 Geant4 RunManager。
  public:
   Actions(const std::vector<Beam>& beam, double l1, std::ofstream& output,
           std::ofstream& deposition, std::ofstream& exits)
@@ -375,6 +424,8 @@ class Actions final : public G4VUserActionInitialization {
 };
 
 class PhysicsList final : public G4VModularPhysicsList {
+  // option4 包括精细电磁输运；StepLimiter 使几何区的用户限步生效。
+  // cut_um 是次级产生阈值的“射程长度”，不是电子跟踪终止能量。
  public:
   explicit PhysicsList(double cut_um) {
     SetDefaultCutValue(cut_um * um);
@@ -386,6 +437,8 @@ class PhysicsList final : public G4VModularPhysicsList {
 } // namespace
 
 int main(int argc, char** argv) {
+  // 参数顺序由 Python native.run_geant4 集中生成；不要直接修改
+  // 此处位置参数而不同时更新 Python 适配器与端到端测试。
   try {
     if (argc != 18) {
       std::cerr << "Usage: droplet_g4 source.csv field.csv multipoles.csv hits.csv "
@@ -418,6 +471,8 @@ int main(int argc, char** argv) {
     manager->SetUserInitialization(new PhysicsList(std::stod(argv[17])));
     manager->SetUserInitialization(new Actions(beam, l1, output, deposition, exits));
     auto* fm = G4TransportationManager::GetTransportationManager()->GetFieldManager();
+    // Dormand–Prince 自适应积分相对论带电粒子方程；用纳米级最小步
+    // 和 0.01 μm 的弦/交点容差保护极薄电场区的落点与能量守恒。
     auto* equation = new G4EqMagElectricField(field.get());
     auto* stepper = new G4DormandPrince745(equation, 8);
     auto* driver = new G4IntegrationDriver<G4DormandPrince745>(0.05 * nm, stepper, 8);
@@ -427,6 +482,7 @@ int main(int argc, char** argv) {
     fm->SetDeltaIntersection(0.01 * um);
     manager->Initialize();
     manager->BeamOn(static_cast<int>(beam.size()));
+    // 一行 source 对应一次 event；原始 CSV 留在输出目录供审计。
     output.close();
     deposition.close();
     exits.close();

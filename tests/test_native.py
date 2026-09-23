@@ -1,4 +1,9 @@
-"""Small end-to-end Geant4 checks (skipped when the native core is not built)."""
+"""小规模端到端 Geant4 回归测试。
+
+无本机构建时自动跳过；这些测试不只检查程序是否运行，还检查
+电荷偏转符号、解析弱偏转量级、静电能量守恒，以及缩小积分步长后
+落点变化是否小于 0.01 个探测器像素。
+"""
 
 from pathlib import Path
 
@@ -17,6 +22,7 @@ pytestmark = pytest.mark.skipif(not EXECUTABLE.exists(), reason="Geant4 core has
 
 def _single_ray(config: SimulationConfig, path: Path,
                 impact_m: float = 100e-6) -> dict[str, np.ndarray]:
+    """用一条离轴、零发散的已知动量电子隔离电场积分误差。"""
     kinetic = config.source.energy_mev * 1e6 * E_CHARGE
     p = np.sqrt(kinetic * (kinetic + 2 * M_E * C**2)) / C
     phase = np.array([[impact_m, 0, 0, 0]])
@@ -25,6 +31,7 @@ def _single_ray(config: SimulationConfig, path: Path,
 
 
 def test_geant4_no_material_sign_energy_and_step_convergence(tmp_path):
+    """真空对照避免散射随机性，分别检查场物理与数值积分。"""
     base = SimulationConfig().with_updates(
         source={"energy_mev": 1.0},
         run={"engine": "geant4", "droplet_material": "vacuum",
@@ -53,6 +60,7 @@ def test_geant4_no_material_sign_energy_and_step_convergence(tmp_path):
 
 
 def test_geant4_thin_dipole_layer_guard_and_step_convergence(tmp_path):
+    """电子掠过纳米层时，边界保护区应防止虚假的能量增减。"""
     base = SimulationConfig().with_updates(
         charge={"q_e": 0, "dipole_potential_v": 1.0},
         run={"engine": "geant4", "droplet_material": "vacuum",

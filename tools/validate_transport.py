@@ -1,4 +1,10 @@
-"""Check Geant4 water scattering and cut/step sensitivity with a pencil beam."""
+"""检查 Geant4 水中散射分布及数值参数的敏感性。
+
+四种运行使用相同 3 MeV、中性、中心铅笔束：基准、缩短水内
+最大步长、收紧和放宽次级粒子生产截断。均在水滴出口统计
+初级电子，减少屏幕孔径造成的选择偏差。KS 检验只做分布
+差异诊断；有限样本下 p 值大不证明两个设置完全等价。
+"""
 
 from __future__ import annotations
 
@@ -22,6 +28,7 @@ from droplet_shadow.native import run_geant4
 
 
 def main() -> None:
+    """重复输运、汇总能损/角分布、输出 JSON 与散射角图。"""
     parser = argparse.ArgumentParser()
     parser.add_argument("--n", type=int, default=3000)
     parser.add_argument("--output", type=Path, default=ROOT / "results" / "transport_validation")
@@ -33,6 +40,7 @@ def main() -> None:
     baseline = SimulationConfig().with_updates(charge={"q_e": 0},
         run={"engine": "geant4", "n_simulated": args.n, "exposure_electrons": args.n})
     cases = {
+        # 除括号中的单一参数外，各组配置完全相同，便于归因。
         "baseline": baseline,
         "half_water_step": baseline.with_updates(run={"geant4_core_step_um": 0.25}),
         "tenth_production_cut": baseline.with_updates(run={"geant4_cut_um": 0.1}),
@@ -44,6 +52,7 @@ def main() -> None:
     for name, config in cases.items():
         hits = run_geant4(config, phase, momentum, args.output / name / "native")
         primary = hits["exit_parent_id"] == 0
+        # 角度相对初始 +z 方向；出口统计不依赖是否打中屏幕。
         loss_kev = (3.0 - hits["exit_energy_mev"][primary]) * 1000
         angle_mrad = np.arccos(np.clip(hits["exit_uz"][primary], -1, 1)) * 1000
         angle_rms = float(np.sqrt(np.mean(angle_mrad**2)))
@@ -61,6 +70,7 @@ def main() -> None:
             "scattering_p90_mrad": float(np.quantile(angle_mrad, 0.9)),
         }
     for name in ("half_water_step", "tenth_production_cut", "coarse_production_cut"):
+        # 两样本 KS 只比较散射角的经验分布形状。
         report["cases"][name]["scattering_ks_p_vs_baseline"] = float(
             ks_2samp(distributions["baseline"], distributions[name]).pvalue)
     fig, ax = plt.subplots(figsize=(7, 4))
