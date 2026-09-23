@@ -1,0 +1,9 @@
+.conda-env/
+.venv/
+build/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.ipynb_checkpoints/
+results/
+

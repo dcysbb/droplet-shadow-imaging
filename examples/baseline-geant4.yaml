@@ -1,0 +1,26 @@
+geometry:
+  radius_um: 50
+  l1_mm: 10
+  l2_mm: 500
+  temperature_k: 298
+  epsilon_water: 78
+  surface_tension_n_m: 0.072
+charge:
+  model: surface
+  q_e: 1000000
+source:
+  energy_mev: 3
+  energy_spread_rms: 0.001
+  crossover_fwhm_um: 10
+  divergence_rms_mrad: 10
+detector:
+  psf_fwhm_um: 50
+  pixel_um: 25
+  diameter_mm: 40
+  efficiency: 1
+run:
+  engine: geant4
+  n_simulated: 10000
+  exposure_electrons: 100000
+  raster_width_mm: 12
+  seed: 20260923
