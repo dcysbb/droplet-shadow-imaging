@@ -24,6 +24,7 @@ def spatial_resolution_object_um(config: SimulationConfig) -> float:
 先用高斯换算 ``FWHM/2.355=σ``；像素均匀积分的 ``σ=p/√12``。
 物面源项受 ``(M-1)/M`` 缩放，屏幕项除以 M。这里只是几何/探测器
 分辨率，不包含穿水滴后的多重散射导致的对比度损失。
+PSF 为零时对应项自然为零，但源尺寸和像素积分仍保留。
 """
     M = config.geometry.magnification
     sigma_source = config.source.crossover_fwhm_um / FWHM_SIGMA
@@ -104,26 +105,6 @@ def image_metrics(config: SimulationConfig, image: np.ndarray,
             "total_image_signal_units": float(np.sum(image)),
             "total_reference_signal_units": float(np.sum(reference)),
             "resolution_fwhm_object_um": spatial_resolution_object_um(config)}
-
-
-def angular_harmonics(image: np.ndarray, edges_m: np.ndarray,
-                      inner_m: float, outer_m: float, max_order: int = 4) -> dict[int, float]:
-    """环带上计算 ``|Σ I exp(ikφ)|/ΣI``，测量图像的角向不对称。
-
-``k=1`` 近似左右偏斜，``k=2`` 近似双瓣；这只是二维投影描述量，
-单次投影一般无法唯一恢复三维表面电荷。
-"""
-    centers = (edges_m[:-1] + edges_m[1:]) * 0.5
-    x, y = np.meshgrid(centers, centers)
-    r = np.hypot(x, y)
-    a = np.arctan2(y, x)
-    zone = (r >= inner_m) & (r < outer_m)
-    weights = image[zone]
-    total = np.sum(weights)
-    if total <= 0:
-        return {k: float("nan") for k in range(1, max_order + 1)}
-    return {k: float(abs(np.sum(weights * np.exp(1j * k * a[zone]))) / total)
-            for k in range(1, max_order + 1)}
 
 
 def poisson_deviance(observed: np.ndarray, expectation: np.ndarray,

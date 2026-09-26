@@ -18,6 +18,13 @@
 #include "G4ParticleTable.hh"
 #include "G4PVPlacement.hh"
 #include "G4RunManager.hh"
+#ifdef G4MULTITHREADED
+#include "G4MTRunManager.hh"
+#endif
+#include "G4AutoDelete.hh"
+#include "G4Threading.hh"
+#include "G4UserRunAction.hh"
+#include "G4Run.hh"
 #include "G4Sphere.hh"
 #include "G4Step.hh"
 #include "G4StepLimiterPhysics.hh"
@@ -36,13 +43,16 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
-#include <complex>
+#include <chrono>
+#include <filesystem>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -54,8 +64,6 @@ namespace {
 struct Beam { double x, y, xp, yp, energy; };
 // 读入后已转换成 Geant4 内部单位：r、φ、E_r。
 struct Radial { double r, potential, field; };
-// Python 已把球谐系数缩放为电势量纲；只保存 m>=0 的独立项。
-struct Multipole { int ell, m; std::complex<double> coefficient; };
 
 bool IsWaterVolume(const G4VPhysicalVolume* volume) {
   // 薄层保护几何把一滴水分成多个同材质体积；这些名字都应计作水。
@@ -100,47 +108,11 @@ std::vector<Radial> ReadRadial(const std::string& path) {
   return values;
 }
 
-std::vector<Multipole> ReadMultipoles(const std::string& path) {
-  // 系数只需乘 volt，不再乘长度：Python 导出时已按 R^(l+1) 缩放。
-  std::ifstream file(path);
-  if (!file) throw std::runtime_error("Cannot open multipoles: " + path);
-  std::string line;
-  std::getline(file, line);
-  std::vector<Multipole> values;
-  while (std::getline(file, line)) {
-    std::replace(line.begin(), line.end(), ',', ' ');
-    std::istringstream input(line);
-    int ell, m;
-    double re, im;
-    if (input >> ell >> m >> re >> im) values.push_back({ell, m, {re * volt, im * volt}});
-  }
-  return values;
-}
-
-double AssociatedLegendre(int l, int m, double x) {
-  // 递推求连带 Legendre 多项式，使用 Condon–Shortley 相位，
-  // 与 Python/SciPy 的球谐函数约定一致，否则非对称场会翻转符号。
-  double pmm = 1.0;
-  const double root = std::sqrt(std::max(0.0, 1.0 - x * x));
-  for (int i = 1; i <= m; ++i) pmm *= -(2 * i - 1) * root;
-  if (l == m) return pmm;
-  double pmmp1 = x * (2 * m + 1) * pmm;
-  if (l == m + 1) return pmmp1;
-  for (int ll = m + 2; ll <= l; ++ll) {
-    double next = ((2 * ll - 1) * x * pmmp1 - (ll + m - 1) * pmm) / (ll - m);
-    pmm = pmmp1;
-    pmmp1 = next;
-  }
-  return pmmp1;
-}
-
 class DropletField final : public G4ElectroMagneticField {
   // Geant4 在每个积分子步调用 GetFieldValue；磁场分量始终为零。
-  // 球内从径向表插值，球外用总净电荷的 1/r² 解析尾场，
-  // 再加球谐非对称项，覆盖从束腰到探测器的整个传播路径。
+  // 球内由径向电势插值求导，球外用总净电荷的 1/r² 解析尾场。
  public:
-  DropletField(std::vector<Radial> radial, std::vector<Multipole> multipoles)
-      : radial_(std::move(radial)), multipoles_(std::move(multipoles)) {}
+  explicit DropletField(const std::vector<Radial>& radial) : radial_(radial) {}
 
   // 静电场可交换电子动能与势能，不能让输运器按纯磁场处理。
   G4bool DoesFieldChangeEnergy() const override { return true; }
@@ -153,37 +125,24 @@ class DropletField final : public G4ElectroMagneticField {
       // 最后一个表点在液滴外半径 R；φ(R)·R/r² 就是外部 Coulomb 场。
       er = radial_.back().potential * radial_.back().r / (r * r);
     } else if (r > 0) {
-      // 球内的 PB/薄壳场已由 Python 采样；只在相邻表点间线性插值。
-      auto it = std::lower_bound(radial_.begin(), radial_.end(), r,
-                                 [](const Radial& p, double q) { return p.r < q; });
+      // 同半径两行分别为内外侧极限。upper_bound 在边界处选外侧，
+      // 并保证所在插值区间长度大于零；不跨电荷壳面进行平滑。
+      auto it = std::upper_bound(radial_.begin(), radial_.end(), r,
+                                 [](double q, const Radial& p) { return q < p.r; });
       if (it == radial_.begin()) er = it->field;
       else {
         const auto& a = *(it - 1);
         const auto& b = *it;
-        er = a.field + (b.field - a.field) * (r - a.r) / (b.r - a.r);
+        const double width = b.r - a.r;
+        const double t = (r - a.r) / width;
+        const double slope = (b.potential - a.potential) / width;
+        const double m0 = -a.field, m1 = -b.field;
+        // φ 的三次 Hermite 插值；负导数给 E，保持两者自洽。
+        er = -(m0 + (6*slope - 4*m0 - 2*m1)*t +
+                    (-6*slope + 3*m0 + 3*m1)*t*t);
       }
     }
     G4ThreeVector electric = r > 0 ? x * (er / r) : G4ThreeVector();
-    if (!multipoles_.empty()) {
-      // 球谐势的笛卡尔梯度用小距离差分。贴近介电边界时，
-      // 跨界面的中心差分会混合内外两套解，因此改用同侧单边差分。
-      const double h = std::min(0.1 * um, std::max(0.02 * nm, r * 1e-5));
-      const double radius = radial_.back().r;
-      const double phi0 = MultipolePotential(x);
-      for (int axis = 0; axis < 3; ++axis) {
-        G4ThreeVector delta;
-        delta[axis] = h;
-        const auto plus = x + delta, minus = x - delta;
-        const double phi_plus = MultipolePotential(plus);
-        const double phi_minus = MultipolePotential(minus);
-        double gradient = (phi_plus - phi_minus) / (2 * h);
-        if ((plus.mag() < radius) != (r < radius) &&
-            (minus.mag() < radius) == (r < radius)) gradient = (phi0 - phi_minus) / h;
-        if ((minus.mag() < radius) != (r < radius) &&
-            (plus.mag() < radius) == (r < radius)) gradient = (phi_plus - phi0) / h;
-        electric[axis] -= gradient;
-      }
-    }
     // Geant4 数组约定是 (Bx,By,Bz,Ex,Ey,Ez)。
     value[0] = value[1] = value[2] = 0.0;
     value[3] = electric.x();
@@ -192,29 +151,26 @@ class DropletField final : public G4ElectroMagneticField {
   }
 
  private:
-  double MultipolePotential(const G4ThreeVector& x) const {
-    // 实电势：m=0 项取实部，m>0 要把省略的 -m 共轭项乘 2。
-    // 球内基函数 r^l，球外基函数 r^(-l-1)，在 r=R 接续。
-    const double r = x.mag();
-    if (r == 0) return 0.0;
-    const double radius = radial_.back().r;
-    const double cosine = x.z() / r;
-    const double angle = std::atan2(x.y(), x.x());
-    double result = 0.0;
-    for (const auto& item : multipoles_) {
-      const int l = item.ell, m = item.m;
-      const double norm = std::sqrt((2.0*l+1.0)/(4.0*CLHEP::pi) *
-                                    std::exp(std::lgamma(l-m+1.0)-std::lgamma(l+m+1.0)));
-      const std::complex<double> y = norm * AssociatedLegendre(l, m, cosine) *
-                                     std::polar(1.0, m * angle);
-      const double rad = r < radius ? std::pow(r / radius, l) : std::pow(radius / r, l + 1);
-      result += rad * (m == 0 ? (item.coefficient * y).real() :
-                      2.0 * (item.coefficient * y).real());
-    }
-    return result;
+  const std::vector<Radial>& radial_; // 只读共享；生命周期覆盖全部 worker。
+};
+
+// 每个线程一套积分状态，只有原始场表共享。ChordFinder 拥有 driver，
+// 自建 stepper/equation/field 则由这个包释放；不可让不同线程共用积分器。
+struct FieldSetup {
+  DropletField field;
+  G4EqMagElectricField equation;
+  G4DormandPrince745 stepper;
+  std::unique_ptr<G4ChordFinder> chord;
+  explicit FieldSetup(const std::vector<Radial>& radial)
+      : field(radial), equation(&field), stepper(&equation, 8),
+        chord(new G4ChordFinder(new G4IntegrationDriver<G4DormandPrince745>(
+            0.05 * nm, &stepper, 8))) {
+    auto* fm = G4TransportationManager::GetTransportationManager()->GetFieldManager();
+    fm->SetDetectorField(&field);
+    fm->SetChordFinder(chord.get());
+    fm->SetDeltaOneStep(0.01 * um);
+    fm->SetDeltaIntersection(0.01 * um);
   }
-  std::vector<Radial> radial_;
-  std::vector<Multipole> multipoles_;
 };
 
 class DetectorConstruction final : public G4VUserDetectorConstruction {
@@ -225,11 +181,17 @@ class DetectorConstruction final : public G4VUserDetectorConstruction {
   DetectorConstruction(double radius_mm, double l1_mm, double l2_mm,
                        std::string material, double layer_nm, double layer_step_nm,
                        double world_step_mm, double far_step_mm,
-                       double near_step_um, double core_step_um)
+                       double near_step_um, double core_step_um,
+                       const std::vector<Radial>& radial)
       : radius_(radius_mm * mm), l1_(l1_mm * mm), l2_(l2_mm * mm),
         material_(std::move(material)), layer_(layer_nm * nm), layer_step_(layer_step_nm * nm),
         world_step_(world_step_mm * mm), far_step_(far_step_mm * mm),
-        near_step_(near_step_um * um), core_step_(core_step_um * um) {}
+        near_step_(near_step_um * um), core_step_(core_step_um * um), radial_(radial) {}
+
+  void ConstructSDandField() override {
+    // 此回调在主线程/各 worker 内调用。G4AutoDelete 在对应线程退出时清理。
+    G4AutoDelete::Register(new FieldSetup(radial_));
+  }
 
   G4VPhysicalVolume* Construct() override {
     auto* nist = G4NistManager::Instance();
@@ -299,6 +261,88 @@ class DetectorConstruction final : public G4VUserDetectorConstruction {
   double radius_, l1_, l2_;
   std::string material_;
   double layer_, layer_step_, world_step_, far_step_, near_step_, core_step_;
+  const std::vector<Radial>& radial_;
+};
+
+struct WorkerReport { int id; int events; };
+struct OutputRegistry {
+  std::string directory;
+  std::mutex mutex;
+  std::vector<WorkerReport> reports;
+  bool show_progress = false;
+  size_t total = 0;
+  std::atomic<size_t> completed{0};
+  std::mutex progress_mutex;
+  std::chrono::steady_clock::time_point last_progress{};
+
+  void ReportProgress(const char* phase, bool force = false) {
+    if (!show_progress) return;
+    // 非阻塞获取；只允许一个线程写快照，其余 worker 继续计算。
+    std::unique_lock<std::mutex> lock(progress_mutex, std::try_to_lock);
+    if (!lock.owns_lock()) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (!force && now - last_progress < std::chrono::milliseconds(250)) return;
+    last_progress = now;
+    const auto path = directory + "/progress.json";
+    std::ofstream out(path + ".tmp");
+    out << "{\"completed\":" << completed.load(std::memory_order_relaxed)
+        << ",\"total\":" << total << ",\"phase\":\"" << phase << "\"}\n";
+    out.close();
+    // 原子替换保证 Python 不读到半行 JSON。进度 IO 失败不终止物理输运。
+    if (out) {
+      std::error_code error;
+      std::filesystem::rename(path + ".tmp", path, error);
+    }
+  }
+  void CompleteEvent() {
+    if (!show_progress) return;
+    const size_t done = completed.fetch_add(1, std::memory_order_relaxed) + 1;
+    // 按已结束的完整事件计数，不用 event_id（多线程会乱序完成）。
+    // 仅在少量事件边界尝试刷新，绝不在粒子积分的每个 step 中刷新。
+    const size_t interval = std::max<size_t>(1, std::min<size_t>(1000, total / 1000));
+    if (done % interval == 0 || done == total) ReportProgress("transport", done == total);
+  }
+};
+
+// 文件按 worker 分片，流本身使用缓冲。锁仅用于每个 worker 结束时登记，
+// 不在每个 step/hit 上竞争锁。空 worker 也写表头，便于统一读取。
+struct WorkerOutput {
+  std::ofstream hits, exits, deposition;
+  int id = G4Threading::G4GetThreadId();
+  int events = 0;
+  explicit WorkerOutput(const std::string& directory) {
+    const auto prefix = directory + "/worker_" + std::to_string(id);
+    hits.open(prefix + "_hits.csv");
+    exits.open(prefix + "_exits.csv");
+    deposition.open(prefix + "_deposition.csv");
+    if (!hits || !exits || !deposition) throw std::runtime_error("Cannot open worker output");
+    hits << "event_id,track_id,parent_id,x_mm,y_mm,energy_MeV,ux,uy,entered\n";
+    exits << "event_id,track_id,parent_id,x_mm,y_mm,z_mm,energy_MeV,ux,uy,uz\n";
+    deposition << "event_id,deposited_e\n";
+    hits << std::setprecision(15);
+    exits << std::setprecision(15);
+    deposition << std::setprecision(15);
+  }
+  void Close() {
+    hits.close(); exits.close(); deposition.close();
+    if (!hits || !exits || !deposition) throw std::runtime_error("Worker output write failed");
+  }
+};
+
+class WorkerRunAction final : public G4UserRunAction {
+ public:
+  WorkerRunAction(std::shared_ptr<WorkerOutput> output, OutputRegistry& registry)
+      : output_(std::move(output)), registry_(registry) {}
+  void EndOfRunAction(const G4Run* run) override {
+    if (run->GetNumberOfEvent() != output_->events)
+      throw std::runtime_error("Worker event count mismatch");
+    output_->Close();
+    std::lock_guard<std::mutex> lock(registry_.mutex);
+    registry_.reports.push_back({output_->id, output_->events});
+  }
+ private:
+  std::shared_ptr<WorkerOutput> output_;
+  OutputRegistry& registry_;
 };
 
 class Generator final : public G4VUserPrimaryGeneratorAction {
@@ -326,10 +370,14 @@ class EventAction final : public G4UserEventAction {
   // 每个初级事件维护两个量：是否有初级电子触及水，以及事件对水滴
   // 的净电荷交换。后者仅用于评估静态电场假设是否会被曝光破坏。
  public:
-  explicit EventAction(std::ofstream& deposition) : deposition_(deposition) {}
+  EventAction(std::shared_ptr<WorkerOutput> output, OutputRegistry& registry)
+      : output_(std::move(output)), registry_(registry) {}
   void BeginOfEventAction(const G4Event*) override { entered_ = false; deposited_e_ = 0; }
   void EndOfEventAction(const G4Event* event) override {
-    deposition_ << event->GetEventID() << ',' << deposited_e_ << '\n';
+    if (event->IsAborted()) throw std::runtime_error("Aborted primary event");
+    output_->deposition << event->GetEventID() << ',' << deposited_e_ << '\n';
+    ++output_->events;
+    registry_.CompleteEvent();
   }
   bool entered() const { return entered_; }
   void mark_entered() { entered_ = true; }
@@ -337,7 +385,8 @@ class EventAction final : public G4UserEventAction {
  private:
   bool entered_ = false;
   double deposited_e_ = 0;
-  std::ofstream& deposition_;
+  std::shared_ptr<WorkerOutput> output_;
+  OutputRegistry& registry_;
 };
 
 class SteppingAction final : public G4UserSteppingAction {
@@ -347,12 +396,15 @@ class SteppingAction final : public G4UserSteppingAction {
   // 3) 电子到屏幕记入 hits.csv，然后停止追踪该粒子。
  public:
   SteppingAction(EventAction* event, std::ofstream& output, std::ofstream& exits)
-      : event_(event), output_(output), exits_(exits) {}
+      : event_(event), output_(output), exits_(exits),
+        trace_first_(std::getenv("DROPLET_TRACE_FIRST") != nullptr) {}
   void UserSteppingAction(const G4Step* step) override {
     auto* track = step->GetTrack();
     const auto* pre = step->GetPreStepPoint();
     const auto* post = step->GetPostStepPoint();
-    if (std::getenv("DROPLET_TRACE_FIRST") &&
+    // 调试开关在启动时固定。不要在数百万 step 中反复查询进程环境：
+    // 某些 libc 的 getenv 带锁，会让本应独立的 worker 发生竞争。
+    if (trace_first_ &&
         G4RunManager::GetRunManager()->GetCurrentEvent()->GetEventID() == 0 &&
         track->GetParentID() == 0) {
       std::cerr << std::setprecision(15);
@@ -401,26 +453,27 @@ class SteppingAction final : public G4UserSteppingAction {
   EventAction* event_;
   std::ofstream& output_;
   std::ofstream& exits_;
+  const bool trace_first_;
 };
 
 class Actions final : public G4VUserActionInitialization {
   // 把事件源、事件累计器和逐步观察器注册给 Geant4 RunManager。
  public:
-  Actions(const std::vector<Beam>& beam, double l1, std::ofstream& output,
-          std::ofstream& deposition, std::ofstream& exits)
-      : beam_(beam), l1_(l1), output_(output), deposition_(deposition), exits_(exits) {}
+  Actions(const std::vector<Beam>& beam, double l1, OutputRegistry& registry)
+      : beam_(beam), l1_(l1), registry_(registry) {}
+  void BuildForMaster() const override {} // 主线程不产生粒子、不打开输出文件。
   void Build() const override {
+    auto output = std::make_shared<WorkerOutput>(registry_.directory);
+    SetUserAction(new WorkerRunAction(output, registry_));
     SetUserAction(new Generator(beam_, l1_));
-    auto* event = new EventAction(deposition_);
+    auto* event = new EventAction(output, registry_);
     SetUserAction(event);
-    SetUserAction(new SteppingAction(event, output_, exits_));
+    SetUserAction(new SteppingAction(event, output->hits, output->exits));
   }
  private:
   const std::vector<Beam>& beam_;
   double l1_;
-  std::ofstream& output_;
-  std::ofstream& deposition_;
-  std::ofstream& exits_;
+  OutputRegistry& registry_;
 };
 
 class PhysicsList final : public G4VModularPhysicsList {
@@ -440,52 +493,89 @@ int main(int argc, char** argv) {
   // 参数顺序由 Python native.run_geant4 集中生成；不要直接修改
   // 此处位置参数而不同时更新 Python 适配器与端到端测试。
   try {
-    if (argc != 18) {
-      std::cerr << "Usage: droplet_g4 source.csv field.csv multipoles.csv hits.csv "
-                   "radius_mm L1_mm L2_mm epsilon_water water|vacuum seed layer_nm layer_step_nm "
-                   "world_step_mm far_step_mm near_step_um core_step_um cut_um\n";
+    if (argc == 2 && std::string(argv[1]) == "--capabilities") {
+      std::cout << "{\"protocol\":2,\"progress\":true,\"multithreaded\":"
+#ifdef G4MULTITHREADED
+                << "true"
+#else
+                << "false"
+#endif
+                << "}\n";
+      return 0;
+    }
+    if (argc != 17) {
+      std::cerr << "Usage: droplet_g4 source.csv field.csv output_directory "
+                   "radius_mm L1_mm L2_mm water|vacuum seed layer_nm layer_step_nm "
+                   "world_step_mm far_step_mm near_step_um core_step_um cut_um threads\n";
       return 2;
     }
     const auto beam = ReadBeam(argv[1]);
-    auto field = std::make_unique<DropletField>(ReadRadial(argv[2]), ReadMultipoles(argv[3]));
-    std::ofstream output(argv[4]);
-    if (!output) throw std::runtime_error("Cannot open hit output");
-    std::ofstream deposition(std::string(argv[4]).substr(0, std::string(argv[4]).find_last_of('/')) + "/deposition.csv");
-    if (!deposition) throw std::runtime_error("Cannot open deposition output");
-    std::ofstream exits(std::string(argv[4]).substr(0, std::string(argv[4]).find_last_of('/')) + "/exits.csv");
-    if (!exits) throw std::runtime_error("Cannot open exit output");
-    deposition << "event_id,deposited_e\n";
-    exits << "event_id,track_id,parent_id,x_mm,y_mm,z_mm,energy_MeV,ux,uy,uz\n";
-    output << "event_id,track_id,parent_id,x_mm,y_mm,energy_MeV,ux,uy,entered\n";
-    output << std::setprecision(15);
-    exits << std::setprecision(15);
-    const double radius = std::stod(argv[5]), l1 = std::stod(argv[6]), l2 = std::stod(argv[7]);
-    const std::string material(argv[9]);
+    const auto radial = ReadRadial(argv[2]);
+    OutputRegistry registry;
+    registry.directory = argv[3];
+    std::filesystem::create_directories(registry.directory);
+    const auto* progress_flag = std::getenv("DROPLET_SHOW_PROGRESS");
+    registry.show_progress = progress_flag && std::string(progress_flag) == "1";
+    registry.total = beam.size();
+    registry.ReportProgress("initializing", true);
+    const double radius = std::stod(argv[4]), l1 = std::stod(argv[5]), l2 = std::stod(argv[6]);
+    const std::string material(argv[7]);
     if (material != "water" && material != "vacuum") throw std::runtime_error("Invalid material");
-    CLHEP::HepRandom::setTheSeed(std::stol(argv[10]));
-    auto manager = std::make_unique<G4RunManager>();
+    const int threads = std::stoi(argv[16]);
+    if (threads < 1) throw std::runtime_error("threads must be positive");
+    // Python 已解析 0=auto，C++ 接收实际线程数。禁止外部变量悄悄覆盖。
+    if (std::getenv("G4FORCENUMBEROFTHREADS"))
+      throw std::runtime_error("Unset G4FORCENUMBEROFTHREADS; use geant4_threads instead");
+    CLHEP::HepRandom::setTheSeed(std::stol(argv[8]));
+    std::unique_ptr<G4RunManager> manager;
+    if (threads == 1) manager = std::make_unique<G4RunManager>();
+    else {
+#ifdef G4MULTITHREADED
+      auto mt = std::make_unique<G4MTRunManager>();
+      mt->SetNumberOfThreads(threads);
+      // 默认逐事件分配种子；不自行按 worker 复制或重置随机流。
+      G4MTRunManager::SetSeedOncePerCommunication(0);
+      manager = std::move(mt);
+#else
+      throw std::runtime_error("Geant4 was built without multithreading support");
+#endif
+    }
     manager->SetUserInitialization(new DetectorConstruction(radius, l1, l2, material,
+                                                            std::stod(argv[9]), std::stod(argv[10]),
                                                             std::stod(argv[11]), std::stod(argv[12]),
-                                                            std::stod(argv[13]), std::stod(argv[14]),
-                                                            std::stod(argv[15]), std::stod(argv[16])));
-    manager->SetUserInitialization(new PhysicsList(std::stod(argv[17])));
-    manager->SetUserInitialization(new Actions(beam, l1, output, deposition, exits));
-    auto* fm = G4TransportationManager::GetTransportationManager()->GetFieldManager();
-    // Dormand–Prince 自适应积分相对论带电粒子方程；用纳米级最小步
-    // 和 0.01 μm 的弦/交点容差保护极薄电场区的落点与能量守恒。
-    auto* equation = new G4EqMagElectricField(field.get());
-    auto* stepper = new G4DormandPrince745(equation, 8);
-    auto* driver = new G4IntegrationDriver<G4DormandPrince745>(0.05 * nm, stepper, 8);
-    fm->SetDetectorField(field.get());
-    fm->SetChordFinder(new G4ChordFinder(driver));
-    fm->SetDeltaOneStep(0.01 * um);
-    fm->SetDeltaIntersection(0.01 * um);
+                                                            std::stod(argv[13]), std::stod(argv[14]), radial));
+    manager->SetUserInitialization(new PhysicsList(std::stod(argv[15])));
+    manager->SetUserInitialization(new Actions(beam, l1, registry));
+    const auto start = std::chrono::steady_clock::now();
     manager->Initialize();
+    const auto initialized = std::chrono::steady_clock::now();
+    registry.ReportProgress("transport", true);
     manager->BeamOn(static_cast<int>(beam.size()));
-    // 一行 source 对应一次 event；原始 CSV 留在输出目录供审计。
-    output.close();
-    deposition.close();
-    exits.close();
+    registry.ReportProgress("transport", true);
+    const auto finished = std::chrono::steady_clock::now();
+    // BeamOn 已同步所有 worker。这里只汇总小型清单，CSV 由 Python 合并。
+    std::sort(registry.reports.begin(), registry.reports.end(),
+              [](const auto& a, const auto& b) { return a.id < b.id; });
+    size_t count = 0;
+    for (const auto& item : registry.reports) count += item.events;
+    if (count != beam.size() || registry.reports.size() != static_cast<size_t>(threads))
+      throw std::runtime_error("Incomplete worker event accounting");
+    std::ofstream metadata(registry.directory + "/transport.json");
+    metadata << std::setprecision(15)
+             << "{\"protocol\":2,\"actual_threads\":" << threads
+             << ",\"mode\":\"" << (threads == 1 ? "serial" : "multithreaded")
+             << "\",\"random_engine\":\"" << CLHEP::HepRandom::getTheEngine()->name()
+             << "\",\"initialization_s\":" << std::chrono::duration<double>(initialized-start).count()
+             << ",\"transport_s\":" << std::chrono::duration<double>(finished-initialized).count()
+             << ",\"workers\":[";
+    for (size_t i = 0; i < registry.reports.size(); ++i) {
+      if (i) metadata << ',';
+      metadata << "{\"id\":" << registry.reports[i].id
+               << ",\"events\":" << registry.reports[i].events << '}';
+    }
+    metadata << "]}\n";
+    metadata.close();
+    if (!metadata) throw std::runtime_error("Cannot write transport metadata");
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "droplet_g4: " << error.what() << '\n';

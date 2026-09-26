@@ -1,0 +1,54 @@
+# q_minus_1e7_s10_l2000
+# 净电荷大小/符号补充；规定分布，非实测电荷。
+# 状态：未运行。参考出处：data/field_scale_sources.json；运行说明：docs/linux_field_study.md。
+geometry:
+  radius_um: 50  # 液滴半径 μm
+  l1_mm: 10  # 束腰到液滴 mm
+  l2_mm: 2000  # 液滴到屏幕 mm
+  temperature_k: 298.0  # 水温 K
+  epsilon_water: 78.0  # 水的相对介电常数，连续介质假设
+  surface_tension_n_m: 0.072  # 仅用于 Rayleigh 比例，N/m
+charge:
+  model: surface  # surface / volume / neutral_double_layer / poisson_boltzmann
+  q_e: -10000000.0  # 整个液滴净电荷，以 e 为单位，不是双层单壳电荷
+  double_layer_q_e: 0.0  # 内壳总电荷 e；外壳为相反总电荷
+  double_layer_thickness_nm: 1.0  # 双壳径向间隔 nm
+  dipole_potential_v: 0.0  # 球内相对球外的等效势差 V，不是瞬时分子局域场
+  dipole_thickness_nm: 0.5  # 等效极化层厚度 nm，属于模型假设
+  dipole_epsilon: 2.0  # 等效层相对介电常数，假设值
+  ion_positive_count: 0.0  # PB 球内正离子总数，非体浓度
+  ion_negative_count: 0.0  # PB 球内负离子总数
+  surface_fixed_e: 0.0  # PB 固定表面电荷 e，不属于移动离子
+source:
+  energy_mev: 3  # 初级电子平均动能 MeV
+  energy_spread_rms: 0.001  # 相对 RMS 能散，0.001=0.1%
+  crossover_fwhm_um: 10  # 每个横向方向的焦点 FWHM，μm
+  divergence_rms_mrad: 10  # 每个横向方向 RMS 发散角 mrad；固定此值缩焦意味着降低发射度
+  x_xprime_correlation: 0.0  # x 与斜率 x' 的相关系数；束腰取 0
+  y_yprime_correlation: 0.0  # y 与斜率 y' 的相关系数
+detector:
+  psf_fwhm_um: 0  # 0=显式关闭 PSF；仍保留有限源、散射和像素积分
+  pixel_um: 25  # 探测器平面的像素宽度 μm
+  diameter_mm: 40  # 圆形有效探测器直径 mm
+  efficiency: 1.0  # 探测效率，未实测情景值
+  gain_mean: 1.0  # 平均增益，任意信号单位
+  gain_shape: 4.0  # 单电子 Gamma 增益的 shape 参数
+  background_counts_pixel: 0.0  # 每像素平均背景，假设值
+  read_noise_rms: 0.0  # 每像素读出噪声 RMS，假设值
+run:
+  engine: geant4  # 正式计算使用 Geant4；配置文件本身不会启动计算
+  n_simulated: 10000000  # 实际追踪 1000 万个初级事件，包括无落点事件
+  exposure_electrons: 1000000  # 主展示曝光；另由相同落点生成 10^5 和 10^7 曝光
+  seed: 20260923  # 源/输运种子，版本及线程数需共同记录
+  raster_width_mm: 40  # 保存视野，覆盖有效探测器
+  transport_step_um: 10.0  # 仅 Python ray 使用，本研究不改变 Geant4 精度
+  geant4_executable: null  # null 使用项目 build/droplet_g4；在 Linux 重新编译
+  geant4_threads: 0  # 0 自动留一核、最多 8；条件间不并行
+  show_progress: true  # 显示事件完成数和处理阶段
+  droplet_material: water  # water 保留材料输运；vacuum 移除材料
+  geant4_world_step_mm: 5.0  # 远场最大步长 mm
+  geant4_far_step_mm: 0.25  # 中远场最大步长 mm
+  geant4_near_step_um: 10.0  # 近场最大步长 μm
+  geant4_core_step_um: 0.5  # 液滴核心最大步长 μm
+  geant4_cut_um: 1.0  # 次级生产 range cut，μm；不是每个电子的硬性停止距离
+  geant4_layer_step_scale: 1.0  # 界面限步倍率；不能为加速而放宽

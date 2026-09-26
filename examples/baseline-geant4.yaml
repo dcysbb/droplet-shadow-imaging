@@ -1,13 +1,15 @@
 geometry:
   radius_um: 50
   l1_mm: 10
-  l2_mm: 500
+  l2_mm: 2000
   temperature_k: 298
   epsilon_water: 78
   surface_tension_n_m: 0.072
 charge:
-  model: surface
-  q_e: 1000000
+  model: neutral_double_layer
+  q_e: 0
+  double_layer_q_e: 100000000
+  double_layer_thickness_nm: 10.0
 source:
   energy_mev: 3
   energy_spread_rms: 0.001
@@ -20,7 +22,9 @@ detector:
   efficiency: 1
 run:
   engine: geant4
-  n_simulated: 10000
-  exposure_electrons: 100000
-  raster_width_mm: 12
+  geant4_threads: 0  # 自动选择，预留一核且最多 8 个工作线程
+  show_progress: true  # 显示已完成初级事件、速度和预计剩余时间
+  n_simulated: 1000000
+  exposure_electrons: 1000000
+  raster_width_mm: 40
   seed: 20260923

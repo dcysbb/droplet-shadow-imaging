@@ -1,4 +1,4 @@
-"""从上到下重跑四个 Notebook，并把新的执行结果写回原 .ipynb。
+"""从上到下重跑项目 Notebook，并把新的执行结果写回原 .ipynb。
 
 这是可复现性检查，不会替代正式高统计量扫描。运行前应确认
 ``python3`` Jupyter kernel 指向已安装 droplet_shadow/Geant4 的环境；
@@ -12,7 +12,7 @@ from nbclient import NotebookClient
 
 root = Path(__file__).resolve().parents[1]
 for path in sorted((root / "notebooks").glob("*.ipynb")):
-    # 文件名 01..04 规定阅读/执行顺序；单本内部按原单元格顺序运行。
+    # 文件名前缀规定阅读/执行顺序；单本内部按原单元格顺序运行。
     notebook = nbformat.read(path, as_version=4)
     executed = NotebookClient(notebook, timeout=1800, kernel_name="python3",
                               resources={"metadata": {"path": str(root)}}).execute()

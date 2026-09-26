@@ -1,0 +1,25 @@
+# Linux 重新创建，不迁移 macOS 的 .conda-env/build。
+name: droplet-shadow
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11
+  - geant4=11.4.2
+  - cmake
+  - ninja
+  - cxx-compiler
+  - expat
+  - zlib
+  - pip
+  - setuptools
+  - wheel
+  - numpy=2.4.6
+  - scipy=1.17.1
+  - matplotlib
+  - pyyaml
+  - pytest
+  - nbformat
+  - nbclient
+  - ipykernel
+  - jupyterlab

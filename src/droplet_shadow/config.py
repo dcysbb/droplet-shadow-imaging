@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
+import math
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +51,7 @@ class Charge:
 ``q_e`` 是整个液滴的*净*电荷；中性双层的 ``double_layer_q_e``
 表示内壳总电荷，外壳是相反的总电荷而非相反的面密度。
 ``dipole_potential_v`` 是连续介质等效势差，不是探针测得的瞬时分子场。
-球谐比例表示固定/冻结的不对称表面电荷，不代表导体平衡态。
+所有电荷模型均为球对称；偶极层表示均匀径向界面势差。
 """
 
     model: str = "surface"  # surface, volume, neutral_double_layer, poisson_boltzmann
@@ -63,11 +64,6 @@ class Charge:
     ion_positive_count: float = 0.0
     ion_negative_count: float = 0.0
     surface_fixed_e: float = 0.0
-    dipole_fraction: float = 0.0
-    quadrupole_fraction: float = 0.0
-    patch_fraction: float = 0.0
-    patch_width_deg: float = 30.0
-    multipole_order: int = 8
 
     def __post_init__(self) -> None:
         # 先排除数值无效的参数，再排除需要重新自洽求解离子分布的组合。
@@ -77,13 +73,8 @@ class Charge:
             raise ValueError("Layer thicknesses and dipole-layer permittivity must be positive")
         if self.ion_positive_count < 0 or self.ion_negative_count < 0:
             raise ValueError("Ion counts must be non-negative")
-        if not 0 <= self.multipole_order <= 16:
-            raise ValueError("multipole_order must be 0..16")
-        if self.patch_width_deg <= 0:
-            raise ValueError("patch_width_deg must be positive")
         if self.model == "poisson_boltzmann" and (
-            self.double_layer_q_e or self.dipole_potential_v or
-            self.dipole_fraction or self.quadrupole_fraction or self.patch_fraction
+            self.double_layer_q_e or self.dipole_potential_v
         ):
             # PB 的移动离子会响应额外界面层；直接线性叠加会漏掉屏蔽。
             raise ValueError("PB plus another interface charge/polarization requires a coupled ion re-solve")
@@ -117,7 +108,7 @@ class Source:
 
 @dataclass(frozen=True)
 class Detector:
-    """MCP/荧光屏和像素的情景参数；增益以任意信号单位计。"""
+    """探测器情景参数；PSF=0 关闭空间展宽，不关闭像素积分或噪声。"""
 
     psf_fwhm_um: float = 50.0
     pixel_um: float = 25.0
@@ -129,7 +120,10 @@ class Detector:
     read_noise_rms: float = 0.0
 
     def __post_init__(self) -> None:
-        if min(self.psf_fwhm_um, self.pixel_um, self.diameter_mm,
+        # 零是明确的理想探测器选项，不使用极小非零宽度冒充关闭。
+        if not math.isfinite(self.psf_fwhm_um) or self.psf_fwhm_um < 0:
+            raise ValueError("psf_fwhm_um must be finite and >= 0 (0 disables PSF)")
+        if min(self.pixel_um, self.diameter_mm,
                self.gain_mean, self.gain_shape) <= 0:
             raise ValueError("Detector widths, size and gain parameters must be positive")
         if not 0 <= self.efficiency <= 1 or min(self.background_counts_pixel, self.read_noise_rms) < 0:
@@ -152,6 +146,8 @@ class Run:
     raster_width_mm: float = 12.0
     transport_step_um: float = 10.0
     geant4_executable: str | None = None
+    geant4_threads: int = 0  # 0 自动（留一核，最多 8）；1 串行；>1 原生事件并行
+    show_progress: bool = True  # 显示输运进度和处理阶段；批处理可设为 false
     droplet_material: str = "water"  # water or vacuum
     geant4_world_step_mm: float = 5.0
     geant4_far_step_mm: float = 0.25
@@ -161,6 +157,10 @@ class Run:
     geant4_layer_step_scale: float = 1.0
 
     def __post_init__(self) -> None:
+        if type(self.show_progress) is not bool:
+            raise ValueError("show_progress must be a boolean (true/false in YAML)")
+        if type(self.geant4_threads) is not int or self.geant4_threads < 0:
+            raise ValueError("geant4_threads must be an integer >= 0 (0=auto, 1=serial)")
         if self.engine not in {"ray", "ideal_occluder", "geant4"}:
             raise ValueError("engine must be ray, ideal_occluder or geant4")
         if self.droplet_material not in {"water", "vacuum"}:

@@ -1,0 +1,361 @@
+{
+  "schema": 1,
+  "description": "35 组球对称场/焦点对照；PSF=0；未运行",
+  "exposure_electrons": [
+    100000,
+    1000000,
+    10000000
+  ],
+  "cases": [
+    {
+      "case_id": "absent_s10_l2000",
+      "group": "main",
+      "model": "absent",
+      "config": "absent_s10_l2000.yaml",
+      "neutral_case": "neutral_s10_l2000",
+      "absent_case": "absent_s10_l2000",
+      "note": "无滴、无场真空参照；不是中性水滴。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "neutral_s10_l2000",
+      "group": "main",
+      "model": "neutral",
+      "config": "neutral_s10_l2000.yaml",
+      "neutral_case": "neutral_s10_l2000",
+      "absent_case": "absent_s10_l2000",
+      "note": "无电场水滴参照；保留水中散射和能损。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "dipole_0p5nm_s10_l2000",
+      "group": "main",
+      "model": "dipole_0p5nm",
+      "config": "dipole_0p5nm_s10_l2000.yaml",
+      "neutral_case": "neutral_s10_l2000",
+      "absent_case": "absent_s10_l2000",
+      "note": "Hao 2022 启发的等效 1 V/0.5 nm 层；厚度/形状是假设，不是瞬时分子场。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "pb_0p01uM_s10_l2000",
+      "group": "main",
+      "model": "pb_0p01uM",
+      "config": "pb_0p01uM_s10_l2000.yaml",
+      "neutral_case": "neutral_s10_l2000",
+      "absent_case": "absent_s10_l2000",
+      "note": "球对称 PB；平均未配对正离子 0.01 μmol/L；固定负表面电荷严格中和。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "pb_0p1uM_s10_l2000",
+      "group": "main",
+      "model": "pb_0p1uM",
+      "config": "pb_0p1uM_s10_l2000.yaml",
+      "neutral_case": "neutral_s10_l2000",
+      "absent_case": "absent_s10_l2000",
+      "note": "球对称 PB；平均未配对正离子 0.1 μmol/L；固定负表面电荷严格中和。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "pb_1uM_s10_l2000",
+      "group": "main",
+      "model": "pb_1uM",
+      "config": "pb_1uM_s10_l2000.yaml",
+      "neutral_case": "neutral_s10_l2000",
+      "absent_case": "absent_s10_l2000",
+      "note": "球对称 PB；平均未配对正离子 1 μmol/L；固定负表面电荷严格中和。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "q_plus_1e6_s10_l2000",
+      "group": "main",
+      "model": "q_plus_1e6",
+      "config": "q_plus_1e6_s10_l2000.yaml",
+      "neutral_case": "neutral_s10_l2000",
+      "absent_case": "absent_s10_l2000",
+      "note": "规定的均匀表面净电荷 +10^6 e；不是文献实测。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "q_minus_1e6_s10_l2000",
+      "group": "main",
+      "model": "q_minus_1e6",
+      "config": "q_minus_1e6_s10_l2000.yaml",
+      "neutral_case": "neutral_s10_l2000",
+      "absent_case": "absent_s10_l2000",
+      "note": "规定的均匀表面净电荷 -10^6 e；不是文献实测。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "absent_s5_l2000",
+      "group": "main",
+      "model": "absent",
+      "config": "absent_s5_l2000.yaml",
+      "neutral_case": "neutral_s5_l2000",
+      "absent_case": "absent_s5_l2000",
+      "note": "无滴、无场真空参照；不是中性水滴。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "neutral_s5_l2000",
+      "group": "main",
+      "model": "neutral",
+      "config": "neutral_s5_l2000.yaml",
+      "neutral_case": "neutral_s5_l2000",
+      "absent_case": "absent_s5_l2000",
+      "note": "无电场水滴参照；保留水中散射和能损。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "dipole_0p5nm_s5_l2000",
+      "group": "main",
+      "model": "dipole_0p5nm",
+      "config": "dipole_0p5nm_s5_l2000.yaml",
+      "neutral_case": "neutral_s5_l2000",
+      "absent_case": "absent_s5_l2000",
+      "note": "Hao 2022 启发的等效 1 V/0.5 nm 层；厚度/形状是假设，不是瞬时分子场。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "pb_0p01uM_s5_l2000",
+      "group": "main",
+      "model": "pb_0p01uM",
+      "config": "pb_0p01uM_s5_l2000.yaml",
+      "neutral_case": "neutral_s5_l2000",
+      "absent_case": "absent_s5_l2000",
+      "note": "球对称 PB；平均未配对正离子 0.01 μmol/L；固定负表面电荷严格中和。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "pb_0p1uM_s5_l2000",
+      "group": "main",
+      "model": "pb_0p1uM",
+      "config": "pb_0p1uM_s5_l2000.yaml",
+      "neutral_case": "neutral_s5_l2000",
+      "absent_case": "absent_s5_l2000",
+      "note": "球对称 PB；平均未配对正离子 0.1 μmol/L；固定负表面电荷严格中和。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "pb_1uM_s5_l2000",
+      "group": "main",
+      "model": "pb_1uM",
+      "config": "pb_1uM_s5_l2000.yaml",
+      "neutral_case": "neutral_s5_l2000",
+      "absent_case": "absent_s5_l2000",
+      "note": "球对称 PB；平均未配对正离子 1 μmol/L；固定负表面电荷严格中和。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "q_plus_1e6_s5_l2000",
+      "group": "main",
+      "model": "q_plus_1e6",
+      "config": "q_plus_1e6_s5_l2000.yaml",
+      "neutral_case": "neutral_s5_l2000",
+      "absent_case": "absent_s5_l2000",
+      "note": "规定的均匀表面净电荷 +10^6 e；不是文献实测。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "q_minus_1e6_s5_l2000",
+      "group": "main",
+      "model": "q_minus_1e6",
+      "config": "q_minus_1e6_s5_l2000.yaml",
+      "neutral_case": "neutral_s5_l2000",
+      "absent_case": "absent_s5_l2000",
+      "note": "规定的均匀表面净电荷 -10^6 e；不是文献实测。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "absent_s1_l2000",
+      "group": "main",
+      "model": "absent",
+      "config": "absent_s1_l2000.yaml",
+      "neutral_case": "neutral_s1_l2000",
+      "absent_case": "absent_s1_l2000",
+      "note": "无滴、无场真空参照；不是中性水滴。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "neutral_s1_l2000",
+      "group": "main",
+      "model": "neutral",
+      "config": "neutral_s1_l2000.yaml",
+      "neutral_case": "neutral_s1_l2000",
+      "absent_case": "absent_s1_l2000",
+      "note": "无电场水滴参照；保留水中散射和能损。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "dipole_0p5nm_s1_l2000",
+      "group": "main",
+      "model": "dipole_0p5nm",
+      "config": "dipole_0p5nm_s1_l2000.yaml",
+      "neutral_case": "neutral_s1_l2000",
+      "absent_case": "absent_s1_l2000",
+      "note": "Hao 2022 启发的等效 1 V/0.5 nm 层；厚度/形状是假设，不是瞬时分子场。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "pb_0p01uM_s1_l2000",
+      "group": "main",
+      "model": "pb_0p01uM",
+      "config": "pb_0p01uM_s1_l2000.yaml",
+      "neutral_case": "neutral_s1_l2000",
+      "absent_case": "absent_s1_l2000",
+      "note": "球对称 PB；平均未配对正离子 0.01 μmol/L；固定负表面电荷严格中和。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "pb_0p1uM_s1_l2000",
+      "group": "main",
+      "model": "pb_0p1uM",
+      "config": "pb_0p1uM_s1_l2000.yaml",
+      "neutral_case": "neutral_s1_l2000",
+      "absent_case": "absent_s1_l2000",
+      "note": "球对称 PB；平均未配对正离子 0.1 μmol/L；固定负表面电荷严格中和。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "pb_1uM_s1_l2000",
+      "group": "main",
+      "model": "pb_1uM",
+      "config": "pb_1uM_s1_l2000.yaml",
+      "neutral_case": "neutral_s1_l2000",
+      "absent_case": "absent_s1_l2000",
+      "note": "球对称 PB；平均未配对正离子 1 μmol/L；固定负表面电荷严格中和。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "q_plus_1e6_s1_l2000",
+      "group": "main",
+      "model": "q_plus_1e6",
+      "config": "q_plus_1e6_s1_l2000.yaml",
+      "neutral_case": "neutral_s1_l2000",
+      "absent_case": "absent_s1_l2000",
+      "note": "规定的均匀表面净电荷 +10^6 e；不是文献实测。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "q_minus_1e6_s1_l2000",
+      "group": "main",
+      "model": "q_minus_1e6",
+      "config": "q_minus_1e6_s1_l2000.yaml",
+      "neutral_case": "neutral_s1_l2000",
+      "absent_case": "absent_s1_l2000",
+      "note": "规定的均匀表面净电荷 -10^6 e；不是文献实测。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "q_plus_1e5_s10_l2000",
+      "group": "model_extra",
+      "model": "q_plus_1e5",
+      "config": "q_plus_1e5_s10_l2000.yaml",
+      "neutral_case": "neutral_s10_l2000",
+      "absent_case": "absent_s10_l2000",
+      "note": "净电荷大小/符号补充；规定分布，非实测电荷。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "q_minus_1e5_s10_l2000",
+      "group": "model_extra",
+      "model": "q_minus_1e5",
+      "config": "q_minus_1e5_s10_l2000.yaml",
+      "neutral_case": "neutral_s10_l2000",
+      "absent_case": "absent_s10_l2000",
+      "note": "净电荷大小/符号补充；规定分布，非实测电荷。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "q_plus_1e7_s10_l2000",
+      "group": "model_extra",
+      "model": "q_plus_1e7",
+      "config": "q_plus_1e7_s10_l2000.yaml",
+      "neutral_case": "neutral_s10_l2000",
+      "absent_case": "absent_s10_l2000",
+      "note": "净电荷大小/符号补充；规定分布，非实测电荷。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "q_minus_1e7_s10_l2000",
+      "group": "model_extra",
+      "model": "q_minus_1e7",
+      "config": "q_minus_1e7_s10_l2000.yaml",
+      "neutral_case": "neutral_s10_l2000",
+      "absent_case": "absent_s10_l2000",
+      "note": "净电荷大小/符号补充；规定分布，非实测电荷。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "dipole_1nm_s10_l2000",
+      "group": "model_extra",
+      "model": "dipole_1nm",
+      "config": "dipole_1nm_s10_l2000.yaml",
+      "neutral_case": "neutral_s10_l2000",
+      "absent_case": "absent_s10_l2000",
+      "note": "相同等效势差 1 V、厚度改为 1 nm；隔离厚度变化的对照。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "shell_10nm_s10_l2000",
+      "group": "model_extra",
+      "model": "shell_10nm",
+      "config": "shell_10nm_s10_l2000.yaml",
+      "neutral_case": "neutral_s10_l2000",
+      "absent_case": "absent_s10_l2000",
+      "note": "规定 ±10^8 e 同心双壳；总电荷抵消而非面密度相等，不是 PB 平衡解。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "absent_s10_l500",
+      "group": "distance_extra",
+      "model": "absent",
+      "config": "absent_s10_l500.yaml",
+      "neutral_case": "neutral_s10_l500",
+      "absent_case": "absent_s10_l500",
+      "note": "无滴、无场真空参照；不是中性水滴。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "neutral_s10_l500",
+      "group": "distance_extra",
+      "model": "neutral",
+      "config": "neutral_s10_l500.yaml",
+      "neutral_case": "neutral_s10_l500",
+      "absent_case": "absent_s10_l500",
+      "note": "无电场水滴参照；保留水中散射和能损。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "dipole_0p5nm_s10_l500",
+      "group": "distance_extra",
+      "model": "dipole_0p5nm",
+      "config": "dipole_0p5nm_s10_l500.yaml",
+      "neutral_case": "neutral_s10_l500",
+      "absent_case": "absent_s10_l500",
+      "note": "Hao 2022 启发的等效 1 V/0.5 nm 层；厚度/形状是假设，不是瞬时分子场。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "pb_0p1uM_s10_l500",
+      "group": "distance_extra",
+      "model": "pb_0p1uM",
+      "config": "pb_0p1uM_s10_l500.yaml",
+      "neutral_case": "neutral_s10_l500",
+      "absent_case": "absent_s10_l500",
+      "note": "球对称 PB；平均未配对正离子 0.1 μmol/L；固定负表面电荷严格中和。",
+      "status": "not_run"
+    },
+    {
+      "case_id": "q_plus_1e6_s10_l500",
+      "group": "distance_extra",
+      "model": "q_plus_1e6",
+      "config": "q_plus_1e6_s10_l500.yaml",
+      "neutral_case": "neutral_s10_l500",
+      "absent_case": "absent_s10_l500",
+      "note": "规定的均匀表面净电荷 +10^6 e；不是文献实测。",
+      "status": "not_run"
+    }
+  ]
+}

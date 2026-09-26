@@ -8,19 +8,35 @@
 from __future__ import annotations
 
 import numpy as np
+import warnings
 from scipy.ndimage import gaussian_filter
 
 from .config import SimulationConfig
 from .constants import FWHM_SIGMA
 
 
+def image_shape(config: SimulationConfig) -> tuple[int, int]:
+    """仅计算尺寸、不分配大数组；与 pixel_grid 保持相同偶数边长规则。"""
+    n = int(np.ceil(config.run.raster_width_mm * 1e3 / config.detector.pixel_um))
+    n += n % 2
+    return n, n
+
+
+def preflight_image(config: SimulationConfig) -> None:
+    """在昂贵输运前提示超大视野。只警告，不偷偷改变像素或物理参数。"""
+    n, _ = image_shape(config)
+    if n * n > 10_000_000:
+        gb = n * n * 8 / 1e9
+        warnings.warn(f"Large detector image: {n} x {n} pixels; one float64 array needs "
+                      f"{gb:.2f} GB and several arrays coexist. Check raster_width_mm "
+                      f"({config.run.raster_width_mm}) versus detector diameter "
+                      f"({config.detector.diameter_mm} mm).", RuntimeWarning, stacklevel=2)
+
+
 def pixel_grid(config: SimulationConfig) -> np.ndarray:
     """返回以探测器中心对称、单位为 m 的像素边界坐标。"""
-    width_m = config.run.raster_width_mm * 1e-3
     pixel_m = config.detector.pixel_um * 1e-6
-    n = int(np.ceil(width_m / pixel_m))
-    if n % 2:
-        n += 1
+    n, _ = image_shape(config)
     return (np.arange(n + 1) - n / 2) * pixel_m
 
 
@@ -44,8 +60,10 @@ def make_images(config: SimulationConfig, hits: dict[str, np.ndarray],
     impulse, _, _ = np.histogram2d(y, x, bins=(edges, edges), weights=valid_weight)
     sigma_pixel = detector.psf_fwhm_um / FWHM_SIGMA / detector.pixel_um
     # PSF 把一个电子的光斑扩散到邻近像素，因此像素噪声会相关。
-    expected = gaussian_filter(impulse * detector.efficiency * detector.gain_mean,
-                               sigma_pixel, mode="constant")
+    mean_impulse = impulse * detector.efficiency * detector.gain_mean
+    # 显式旁路卷积；copy 保证后续噪声处理不会反过来修改理想/期望图。
+    expected = (mean_impulse.copy() if detector.psf_fwhm_um == 0 else
+                gaussian_filter(mean_impulse, sigma_pixel, mode="constant"))
     # One compound-Poisson detector draw from the transport-estimated impulse
     # intensity. Sampling each weighted MC ray repeatedly at the exact same
     # coordinate would add artificial event-position clustering when weight>1.
@@ -55,7 +73,8 @@ def make_images(config: SimulationConfig, hits: dict[str, np.ndarray],
     noisy_impulse[active] = rng.gamma(detected[active] * detector.gain_shape,
                                       detector.gain_mean / detector.gain_shape)
     # Gamma 的 shape 随检测电子数增加，表示各单电子增益的独立求和。
-    observed = gaussian_filter(noisy_impulse, sigma_pixel, mode="constant")
+    observed = (noisy_impulse.copy() if detector.psf_fwhm_um == 0 else
+                gaussian_filter(noisy_impulse, sigma_pixel, mode="constant"))
     observed += rng.poisson(detector.background_counts_pixel, size=observed.shape)
     if detector.read_noise_rms:
         observed += rng.normal(0, detector.read_noise_rms, size=observed.shape)

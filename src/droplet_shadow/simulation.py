@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -16,6 +16,7 @@ from pathlib import Path
 import platform
 import subprocess
 import sys
+import time
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -23,15 +24,16 @@ import numpy as np
 import scipy
 from scipy.ndimage import gaussian_filter
 
-from .analysis import (angular_harmonics, caustic_locations, image_metrics,
+from .analysis import (caustic_locations, image_metrics,
                        radial_profile, spatial_resolution_object_um)
 from .config import SimulationConfig
 from .constants import C, COULOMB_K, E_CHARGE, M_E
-from .detector import make_images
-from .fields import build_field, multipole_convergence_error, rayleigh_charge_e
+from .detector import make_images, preflight_image
+from .fields import build_field, rayleigh_charge_e
 from .native import geant4_executable, run_geant4
 from .rays import trace_rays
 from .source import geometric_emittance, sample_source
+from .progress import SimulationProgress
 
 
 @dataclass
@@ -43,6 +45,7 @@ class SimulationResult:
     images: dict[str, np.ndarray]
     metrics: dict[str, float | None]
     output_dir: Path | None = None
+    runtime: dict = field(default_factory=dict)  # 性能/资源元数据，不混入物理 hits 数组。
 
 
 def _base_metrics(config: SimulationConfig, hits: dict[str, np.ndarray],
@@ -75,9 +78,6 @@ def _base_metrics(config: SimulationConfig, hits: dict[str, np.ndarray],
         "exposure_weight_per_transport_primary": (
             config.run.exposure_electrons / config.run.n_simulated),
     }
-    if (config.charge.dipole_fraction or config.charge.quadrupole_fraction or
-            config.charge.patch_fraction):
-        data["multipole_truncation_relative_rms"] = multipole_convergence_error(config)
     if "deposited_e_by_event" in hits:
         # 这里只评估一次曝光可能改变多少净电荷；首版不随时间更新场。
         total_deposition = float(np.sum(hits["deposited_e_by_event"]))
@@ -127,22 +127,46 @@ def _base_metrics(config: SimulationConfig, hits: dict[str, np.ndarray],
 
 def simulate(config: SimulationConfig, output_dir: str | Path | None = None) -> SimulationResult:
     """运行一次固定参数、固定随机种子的完整合成曝光。"""
+    with SimulationProgress(config.run.n_simulated, config.run.show_progress) as progress:
+        return _simulate(config, output_dir, progress)
+
+
+def _simulate(config: SimulationConfig, output_dir: str | Path | None,
+              progress: SimulationProgress) -> SimulationResult:
+    """同一个进度对象覆盖输入、输运、合并、探测器和保存，失败不显示完成。"""
+    started = time.perf_counter()
+    preflight_image(config)
+    progress.stage("生成电子源")
+    runtime: dict = {"timings_s": {}}
     output = Path(output_dir) if output_dir is not None else None
     if output:
         output.mkdir(parents=True, exist_ok=True)
     source_rng = np.random.default_rng(config.run.seed)
     # 探测器使用 seed+1，避免源抽样与 shot noise 意外共享同一随机流。
     phase, momentum = sample_source(config.source, config.run.n_simulated, source_rng)
+    sourced = time.perf_counter()
+    runtime["timings_s"]["source"] = sourced - started
     if config.run.engine == "geant4":
         if output is None:
             raise ValueError("Geant4 runs require output_dir for source and hit files")
-        hits = run_geant4(config, phase, momentum, output / "native")
+        runtime["geant4"] = {}
+        hits = run_geant4(config, phase, momentum, output / "native", runtime["geant4"], progress)
     else:
+        progress.stage("射线输运")
         hits = trace_rays(config, build_field(config), phase, momentum)
+        progress.update(config.run.n_simulated)
+    transported = time.perf_counter()
+    runtime["timings_s"]["transport_pipeline"] = transported - sourced
+    progress.stage("生成探测器图像")
     images = make_images(config, hits, np.random.default_rng(config.run.seed + 1))
+    detected = time.perf_counter()
+    runtime["timings_s"]["detector"] = detected - transported
     metrics = _base_metrics(config, hits, images, phase, momentum)
-    result = SimulationResult(config, hits, images, metrics, output)
+    runtime["timings_s"]["metrics"] = time.perf_counter() - detected
+    runtime["timings_s"]["before_save"] = time.perf_counter() - started
+    result = SimulationResult(config, hits, images, metrics, output, runtime)
     if output:
+        progress.stage("保存结果与图像")
         save_result(result)
     return result
 
@@ -185,6 +209,7 @@ def version_fingerprint(config: SimulationConfig) -> dict[str, str]:
 
 def save_result(result: SimulationResult) -> None:
     """写原始粒子/图像数组、配置与版本记录，以及可直接查看的图。"""
+    started = time.perf_counter()
     output = result.output_dir
     if output is None:
         raise ValueError("SimulationResult has no output directory")
@@ -199,10 +224,16 @@ def save_result(result: SimulationResult) -> None:
         if config_bin.is_file():
             versions["geant4"] = subprocess.check_output(
                 [str(config_bin), "--version"], text=True).strip()
+    _plot_image(result, output / "shadow.png")
+    timings = result.runtime.setdefault("timings_s", {})
+    timings["save"] = time.perf_counter() - started
+    # 包含 NPZ、图像、指纹计算；不包含最后这个小型 JSON 自身的写入时间。
+    timings["total"] = timings.get("before_save", 0) + timings["save"]
     details = {"created_utc": datetime.now(timezone.utc).isoformat(),
                "platform": platform.platform(), "versions": versions,
                "config": result.config.to_dict(),
                "metrics": result.metrics,
+               "runtime": result.runtime,
                "model_caveat": "Local spectroscopic fields are not equated to external Coulomb fields.",
                "mc_sampling_caveat": (
                    # 输运样本少于曝光数时，图像可能包含数值 MC 纹理。
@@ -210,7 +241,6 @@ def save_result(result: SimulationResult) -> None:
                    "increase n_simulated for quantitative images."
                    if result.config.run.n_simulated < result.config.run.exposure_electrons else None)}
     (output / "result.json").write_text(json.dumps(details, indent=2, ensure_ascii=False), encoding="utf-8")
-    _plot_image(result, output / "shadow.png")
 
 
 def load_images(path: str | Path) -> dict[str, np.ndarray]:
@@ -280,20 +310,19 @@ def simulate_controls(config: SimulationConfig, output_dir: str | Path) -> dict[
     charged = simulate(config, root / "charged")
     neutral_config = config.with_updates(charge={"q_e": 0, "model": "surface",
                                                  "dipole_potential_v": 0,
-                                                 "dipole_fraction": 0,
-                                                 "quadrupole_fraction": 0,
-                                                 "patch_fraction": 0})
+                                                 "double_layer_q_e": 0,
+                                                 "surface_fixed_e": 0,
+                                                 "ion_positive_count": 0,
+                                                 "ion_negative_count": 0})
     neutral = simulate(neutral_config, root / "neutral")
-    absent = simulate(neutral_config.with_updates(run={"droplet_material": "vacuum"}),
+    # 无滴参考必须同时移除理想遮挡器；ray 本身不模拟材料作用。
+    absent_run = {"droplet_material": "vacuum"}
+    if config.run.engine == "ideal_occluder":
+        absent_run["engine"] = "ray"
+    absent = simulate(neutral_config.with_updates(run=absent_run),
                       root / "no_droplet")
-    R_projected = config.geometry.radius_m * config.geometry.magnification
-    edges = charged.images["x_edges_m"]
     comparison = {"charged_vs_neutral": compare_result(charged, neutral),
                   "neutral_vs_no_droplet": compare_result(neutral, absent),
-                  "charged_angular_harmonics": angular_harmonics(
-                      charged.images["expected"], edges, R_projected, 1.5 * R_projected),
-                  "neutral_angular_harmonics": angular_harmonics(
-                      neutral.images["expected"], edges, R_projected, 1.5 * R_projected),
                   "caustic_candidate_impact_um": caustic_locations(config, build_field(config))}
     (root / "comparison.json").write_text(json.dumps(comparison, indent=2), encoding="utf-8")
     _plot_controls(charged, neutral, absent, root / "comparison.png")
